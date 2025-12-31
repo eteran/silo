@@ -55,6 +55,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	defer server.Close()
+
 	slog.Info("Silo listening", "addr", *listenAddr, "dataDir", absDataDir, "dbPath", *dbPath)
 
 	if err := http.ListenAndServe(*listenAddr, server.Handler()); err != nil {

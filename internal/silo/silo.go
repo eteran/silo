@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -65,9 +64,6 @@ type Config struct {
 
 // Server provides a minimal S3-compatible HTTP API backed by the local
 // filesystem for object storage and SQLite for metadata.
-//
-// This is intentionally small and incomplete but structured so additional
-// S3/MinIO-compatible operations can be added over time.
 type Server struct {
 	cfg Config
 	db  *sql.DB
@@ -99,11 +95,49 @@ func NewServer(cfg Config) (*Server, error) {
 	return &Server{cfg: cfg, db: db}, nil
 }
 
+func (s *Server) Close() error {
+	return s.db.Close()
+}
+
 // Handler returns an http.Handler implementing a subset of the S3/MinIO API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	// Catch-all handler; we parse bucket/key from the path.
-	mux.HandleFunc("/", s.handleRoot)
+
+	// List all buckets
+	mux.HandleFunc("GET /", s.handleListBuckets)
+
+	// Bucket-level operations
+	mux.HandleFunc("PUT /{bucket}", func(w http.ResponseWriter, r *http.Request) {
+		bucket := r.PathValue("bucket")
+		s.handleCreateBucket(w, r, bucket)
+	})
+	mux.HandleFunc("GET /{bucket}", func(w http.ResponseWriter, r *http.Request) {
+		bucket := r.PathValue("bucket")
+		s.handleListObjects(w, r, bucket)
+	})
+
+	// Object-level operations
+	mux.HandleFunc("PUT /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		bucket := r.PathValue("bucket")
+		key := r.PathValue("key")
+		s.handlePutObject(w, r, bucket, key)
+	})
+	mux.HandleFunc("GET /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		bucket := r.PathValue("bucket")
+		key := r.PathValue("key")
+		s.handleGetObject(w, r, bucket, key)
+	})
+	mux.HandleFunc("HEAD /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		bucket := r.PathValue("bucket")
+		key := r.PathValue("key")
+		s.handleHeadObject(w, r, bucket, key)
+	})
+	mux.HandleFunc("DELETE /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		bucket := r.PathValue("bucket")
+		key := r.PathValue("key")
+		s.handleDeleteObject(w, r, bucket, key)
+	})
+
 	return mux
 }
 
@@ -133,73 +167,6 @@ func initSchema(db *sql.DB) error {
 		}
 	}
 	return nil
-}
-
-// handleRoot dispatches based on HTTP method and parsed bucket/key.
-// This is a deliberately small subset intended as a starting point and is
-// not a fully S3-compatible implementation yet.
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	bucket, key := parseBucketAndKey(r.URL.Path)
-
-	switch r.Method {
-	case http.MethodPut:
-		if key == "" && bucket != "" {
-			// PUT /bucket -> create bucket
-			s.handleCreateBucket(w, r, bucket)
-			return
-		}
-		if bucket != "" && key != "" {
-			// PUT /bucket/object -> put object
-			s.handlePutObject(w, r, bucket, key)
-			return
-		}
-	case http.MethodGet:
-		if bucket == "" {
-			// GET / -> list buckets
-			s.handleListBuckets(w, r)
-			return
-		}
-		if bucket != "" && key == "" {
-			// GET /bucket -> list objects in bucket
-			s.handleListObjects(w, r, bucket)
-			return
-		}
-		if bucket != "" && key != "" {
-			// GET /bucket/object -> get object
-			s.handleGetObject(w, r, bucket, key)
-			return
-		}
-	case http.MethodHead:
-		if bucket != "" && key != "" {
-			// HEAD /bucket/object -> get object metadata
-			s.handleHeadObject(w, r, bucket, key)
-			return
-		}
-	case http.MethodDelete:
-		if bucket != "" && key != "" {
-			// DELETE /bucket/object -> delete object
-			s.handleDeleteObject(w, r, bucket, key)
-			return
-		}
-	}
-
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusNotImplemented)
-	_, _ = w.Write([]byte("not implemented\n"))
-}
-
-func parseBucketAndKey(path string) (bucket, key string) {
-	// Trim leading/trailing slashes and split.
-	clean := strings.Trim(path, "/")
-	if clean == "" {
-		return "", ""
-	}
-	parts := strings.Split(clean, "/")
-	bucket = parts[0]
-	if len(parts) > 1 {
-		key = strings.Join(parts[1:], "/")
-	}
-	return bucket, key
 }
 
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {

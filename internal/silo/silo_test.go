@@ -261,3 +261,48 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 		})
 	}
 }
+
+// TestUnknownRoutes ensures that requests which use unsupported HTTP methods
+// for otherwise valid paths return 405 Method Not Allowed from the standard
+// library router.
+func TestUnknownRoutes(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "POST root",
+			method: http.MethodPost,
+			path:   "/",
+		},
+		{
+			name:   "POST bucket",
+			method: http.MethodPost,
+			path:   "/some-bucket",
+		},
+		{
+			name:   "PATCH object",
+			method: http.MethodPatch,
+			path:   "/some-bucket/some-key",
+		},
+	}
+
+	for _, tc := range tests {
+		// capture range variable
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
+			require.NoError(t, err, "creating request")
+
+			resp, err := client.Do(req)
+			require.NoError(t, err, "performing request")
+			defer resp.Body.Close()
+
+			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "status code")
+		})
+	}
+}

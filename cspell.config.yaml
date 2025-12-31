@@ -3,11 +3,12 @@ ignorePaths: []
 dictionaryDefinitions: []
 dictionaries: []
 words:
+  - charmbracelet
   - davecgh
+  - go-difflib
   - gopkg
   - mattn
   - pmezard
   - stretchr
-  - go-difflib
 ignoreWords: []
 import: []
