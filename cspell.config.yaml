@@ -3,6 +3,11 @@ ignorePaths: []
 dictionaryDefinitions: []
 dictionaries: []
 words:
+  - davecgh
+  - gopkg
   - mattn
+  - pmezard
+  - stretchr
+  - go-difflib
 ignoreWords: []
 import: []
