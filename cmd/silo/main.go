@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"silo/internal/silo"
+
+	"github.com/charmbracelet/log"
 )
 
 func main() {
@@ -19,8 +22,15 @@ func main() {
 
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	handler := log.NewWithOptions(os.Stdout, log.Options{
+		Level:           log.DebugLevel,
+		TimeFormat:      time.RFC3339,
+		ReportTimestamp: true,
+		TimeFunction:    log.NowUTC,
+		ReportCaller:    true,
+	})
+
+	slog.SetDefault(slog.New(handler))
 
 	// Ensure data directory is absolute for easier debugging.
 	absDataDir, err := filepath.Abs(*dataDir)
