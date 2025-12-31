@@ -20,40 +20,6 @@ import (
 
 const s3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
-// ListAllMyBucketsResult represents the XML response for the S3 ListBuckets API.
-type ListAllMyBucketsResult struct {
-	XMLName xml.Name `xml:"ListAllMyBucketsResult"`
-	XMLNS   string   `xml:"xmlns,attr"`
-	Owner   struct {
-		ID          string `xml:"ID"`
-		DisplayName string `xml:"DisplayName"`
-	} `xml:"Owner"`
-	Buckets []struct {
-		Name         string `xml:"Name"`
-		CreationDate string `xml:"CreationDate"`
-	} `xml:"Buckets>Bucket"`
-}
-
-// ListBucketResult represents the XML response for the S3 ListObjects API.
-type ListBucketResult struct {
-	XMLName     xml.Name        `xml:"ListBucketResult"`
-	XMLNS       string          `xml:"xmlns,attr"`
-	Name        string          `xml:"Name"`
-	Prefix      string          `xml:"Prefix"`
-	MaxKeys     int             `xml:"MaxKeys"`
-	IsTruncated bool            `xml:"IsTruncated"`
-	Contents    []ObjectSummary `xml:"Contents"`
-}
-
-// ObjectSummary is a single entry in a ListBucketResult.
-type ObjectSummary struct {
-	Key          string `xml:"Key"`
-	LastModified string `xml:"LastModified"`
-	ETag         string `xml:"ETag"`
-	Size         int64  `xml:"Size"`
-	StorageClass string `xml:"StorageClass"`
-}
-
 // Config holds configuration for the local S3-compatible server.
 type Config struct {
 	// DataDir is the root directory where object payloads are stored.
@@ -71,9 +37,11 @@ type Server struct {
 
 // NewServer initializes the metadata database and returns a new Server.
 func NewServer(cfg Config) (*Server, error) {
+
 	if cfg.DataDir == "" {
 		return nil, errors.New("DataDir must not be empty")
 	}
+
 	if cfg.DBPath == "" {
 		return nil, errors.New("DBPath must not be empty")
 	}
@@ -97,48 +65,6 @@ func NewServer(cfg Config) (*Server, error) {
 
 func (s *Server) Close() error {
 	return s.db.Close()
-}
-
-// Handler returns an http.Handler implementing a subset of the S3/MinIO API.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-
-	// List all buckets
-	mux.HandleFunc("GET /", s.handleListBuckets)
-
-	// Bucket-level operations
-	mux.HandleFunc("PUT /{bucket}", func(w http.ResponseWriter, r *http.Request) {
-		bucket := r.PathValue("bucket")
-		s.handleCreateBucket(w, r, bucket)
-	})
-	mux.HandleFunc("GET /{bucket}", func(w http.ResponseWriter, r *http.Request) {
-		bucket := r.PathValue("bucket")
-		s.handleListObjects(w, r, bucket)
-	})
-
-	// Object-level operations
-	mux.HandleFunc("PUT /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
-		bucket := r.PathValue("bucket")
-		key := r.PathValue("key")
-		s.handlePutObject(w, r, bucket, key)
-	})
-	mux.HandleFunc("GET /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
-		bucket := r.PathValue("bucket")
-		key := r.PathValue("key")
-		s.handleGetObject(w, r, bucket, key)
-	})
-	mux.HandleFunc("HEAD /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
-		bucket := r.PathValue("bucket")
-		key := r.PathValue("key")
-		s.handleHeadObject(w, r, bucket, key)
-	})
-	mux.HandleFunc("DELETE /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
-		bucket := r.PathValue("bucket")
-		key := r.PathValue("key")
-		s.handleDeleteObject(w, r, bucket, key)
-	})
-
-	return mux
 }
 
 func initSchema(db *sql.DB) error {
