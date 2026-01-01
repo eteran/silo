@@ -2,6 +2,8 @@ package silo
 
 import "encoding/xml"
 
+const s3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
+
 // ListAllMyBucketsResult represents the XML response for the S3 ListBuckets API.
 type ListAllMyBucketsResult struct {
 	XMLName xml.Name `xml:"ListAllMyBucketsResult"`

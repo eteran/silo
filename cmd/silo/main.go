@@ -35,12 +35,12 @@ func main() {
 	// Ensure data directory is absolute for easier debugging.
 	absDataDir, err := filepath.Abs(*dataDir)
 	if err != nil {
-		slog.Error("failed to resolve data directory", "err", err, "dataDir", *dataDir)
+		slog.Error("Failed to resolve data directory", "err", err, "dataDir", *dataDir)
 		os.Exit(1)
 	}
 
 	if err := os.MkdirAll(absDataDir, 0o755); err != nil {
-		slog.Error("failed to create data directory", "err", err, "dataDir", absDataDir)
+		slog.Error("Failed to create data directory", "err", err, "dataDir", absDataDir)
 		os.Exit(1)
 	}
 
@@ -51,7 +51,7 @@ func main() {
 
 	server, err := silo.NewServer(cfg)
 	if err != nil {
-		slog.Error("failed to create silo server", "err", err)
+		slog.Error("Failed to create silo server", "err", err)
 		os.Exit(1)
 	}
 
@@ -60,7 +60,7 @@ func main() {
 	slog.Info("Silo listening", "addr", *listenAddr, "dataDir", absDataDir, "dbPath", *dbPath)
 
 	if err := http.ListenAndServe(*listenAddr, server.Handler()); err != nil {
-		slog.Error("server exited", "err", err)
+		slog.Error("Server exited", "err", err)
 		os.Exit(1)
 	}
 }

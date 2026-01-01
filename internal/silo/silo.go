@@ -18,8 +18,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const s3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
-
 // Config holds configuration for the local S3-compatible server.
 type Config struct {
 	// DataDir is the root directory where object payloads are stored.
@@ -106,7 +104,7 @@ func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, buck
 		bucket, time.Now().UTC(),
 	)
 	if err != nil {
-		slog.Error("create bucket", "bucket", bucket, "err", err)
+		slog.Error("Create bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -124,7 +122,7 @@ func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, buck
 func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(`SELECT name, created_at FROM buckets ORDER BY name`)
 	if err != nil {
-		slog.Error("list buckets", "err", err)
+		slog.Error("List buckets", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -140,7 +138,7 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 			CreatedAt time.Time
 		}
 		if err := rows.Scan(&b.Name, &b.CreatedAt); err != nil {
-			slog.Error("scan bucket", "err", err)
+			slog.Error("Scan bucket", "err", err)
 			continue
 		}
 		buckets = append(buckets, b)
@@ -149,8 +147,8 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	resp := ListAllMyBucketsResult{
 		XMLNS: s3XMLNamespace,
 	}
-	resp.Owner.ID = "local-s3"
-	resp.Owner.DisplayName = "local-s3"
+	resp.Owner.ID = "silo"
+	resp.Owner.DisplayName = "silo"
 	for _, b := range buckets {
 		resp.Buckets = append(resp.Buckets, struct {
 			Name         string `xml:"Name"`
@@ -164,7 +162,7 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	if err := xml.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("encode list buckets xml", "err", err)
+		slog.Error("Encode list buckets XML", "err", err)
 	}
 }
 
@@ -176,14 +174,14 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	// Ensure bucket exists; for convenience, auto-create if missing.
 	if err := s.ensureBucket(bucket); err != nil {
-		slog.Error("ensure bucket", "bucket", bucket, "err", err)
+		slog.Error("Ensure bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
 
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("read request body", "err", err)
+		slog.Error("Read request body", "err", err)
 		writeS3Error(w, "InvalidRequest", "Failed to read request body", r.URL.Path, http.StatusBadRequest)
 		return
 	}
@@ -194,14 +192,14 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	subdir := hashHex[:2]
 	storeDir := filepath.Join(s.cfg.DataDir, subdir)
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		slog.Error("create object dir", "dir", storeDir, "err", err)
+		slog.Error("Create object directory", "dir", storeDir, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
 
 	objPath := filepath.Join(storeDir, hashHex)
 	if err := os.WriteFile(objPath, data, 0o644); err != nil {
-		slog.Error("write object file", "path", objPath, "err", err)
+		slog.Error("Write object file", "path", objPath, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -222,7 +220,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		bucket, key, hashHex, len(data), contentType, time.Now().UTC(),
 	)
 	if err != nil {
-		slog.Error("upsert object metadata", "bucket", bucket, "key", key, "err", err)
+		slog.Error("Upsert object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -248,7 +246,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 	if err != nil {
-		slog.Error("lookup object metadata", "bucket", bucket, "key", key, "err", err)
+		slog.Error("Lookup object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -261,7 +259,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 			http.Error(w, "object payload missing", http.StatusInternalServerError)
 			return
 		}
-		slog.Error("open object file", "path", objPath, "err", err)
+		slog.Error("Open object file", "path", objPath, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -281,14 +279,14 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, f); err != nil {
-		slog.Error("stream object", "bucket", bucket, "key", key, "err", err)
+		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
 	}
 }
 
 func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	_, err := s.db.Exec(`DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
 	if err != nil {
-		slog.Error("delete object metadata", "bucket", bucket, "key", key, "err", err)
+		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -325,7 +323,7 @@ func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket
 		return
 	}
 	if err != nil {
-		slog.Error("lookup object metadata (HEAD)", "bucket", bucket, "key", key, "err", err)
+		slog.Error("Lookup object metadata (HEAD)", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -361,7 +359,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 		return
 	}
 	if err != nil {
-		slog.Error("check bucket exists", "bucket", bucket, "err", err)
+		slog.Error("Check bucket exists", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -387,7 +385,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		slog.Error("list objects", "bucket", bucket, "err", err)
+		slog.Error("List objects", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -402,7 +400,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 			createdAt time.Time
 		)
 		if err := rows.Scan(&key, &hashHex, &size, &createdAt); err != nil {
-			slog.Error("scan object", "bucket", bucket, "err", err)
+			slog.Error("Scan object", "bucket", bucket, "err", err)
 			continue
 		}
 		summaries = append(summaries, ObjectSummary{
@@ -432,7 +430,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	if err := xml.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("encode list objects xml", "bucket", bucket, "err", err)
+		slog.Error("Encode list objects XML", "bucket", bucket, "err", err)
 	}
 }
 
