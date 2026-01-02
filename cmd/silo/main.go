@@ -17,7 +17,6 @@ func main() {
 	var (
 		listenAddr = flag.String("listen", ":8080", "HTTP listen address")
 		dataDir    = flag.String("data-dir", "./data", "directory to store object data")
-		dbPath     = flag.String("db", "./metadata.sqlite", "path to SQLite metadata database")
 	)
 
 	flag.Parse()
@@ -46,7 +45,6 @@ func main() {
 
 	cfg := silo.Config{
 		DataDir: absDataDir,
-		DBPath:  *dbPath,
 	}
 
 	server, err := silo.NewServer(cfg)
@@ -57,7 +55,7 @@ func main() {
 
 	defer server.Close()
 
-	slog.Info("Silo listening", "addr", *listenAddr, "dataDir", absDataDir, "dbPath", *dbPath)
+	slog.Info("Silo listening", "addr", *listenAddr, "dataDir", absDataDir)
 
 	if err := http.ListenAndServe(*listenAddr, server.Handler()); err != nil {
 		slog.Error("Server exited", "err", err)

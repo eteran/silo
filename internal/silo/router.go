@@ -2,7 +2,7 @@ package silo
 
 import "net/http"
 
-// Handler returns an http.Handler implementing a subset of the S3/MinIO API.
+// Handler returns an http.Handler implementing the S3/MinIO API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 

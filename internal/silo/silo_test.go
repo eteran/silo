@@ -22,9 +22,8 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "test.sqlite")
 
-	srv, err := NewServer(Config{DataDir: dataDir, DBPath: dbPath})
+	srv, err := NewServer(Config{DataDir: dataDir})
 	require.NoError(t, err, "NewServer error")
 
 	httpSrv := httptest.NewServer(srv.Handler())

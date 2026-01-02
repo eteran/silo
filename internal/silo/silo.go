@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -27,8 +28,6 @@ var bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
 type Config struct {
 	// DataDir is the root directory where object payloads are stored.
 	DataDir string
-	// DBPath is the path to the SQLite metadata database.
-	DBPath string
 
 	Region string
 }
@@ -47,10 +46,6 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, errors.New("DataDir must not be empty")
 	}
 
-	if cfg.DBPath == "" {
-		return nil, errors.New("DBPath must not be empty")
-	}
-
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
 	}
@@ -59,7 +54,9 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", cfg.DBPath)
+	dbPath := path.Join(cfg.DataDir, "metadata.sqlite")
+
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
