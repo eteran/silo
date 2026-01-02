@@ -9,15 +9,19 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+var bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
 
 // Config holds configuration for the local S3-compatible server.
 type Config struct {
@@ -848,19 +852,9 @@ func isValidBucketName(name string) bool {
 		return false
 	}
 
-	// Must start and end with a letter or digit.
-	first := name[0]
-	last := name[len(name)-1]
-	if !isLetterOrDigit(first) || !isLetterOrDigit(last) {
-		return false
-	}
-
-	// Characters must be lowercase letters, digits, dots, or hyphens.
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.' {
-			continue
-		}
+	// Must consist only of lowercase letters, digits, dots, or hyphens,
+	// and must start and end with a letter or digit.
+	if !bucketNamePattern.MatchString(name) {
 		return false
 	}
 
@@ -868,6 +862,7 @@ func isValidBucketName(name string) bool {
 	if strings.Contains(name, "..") {
 		return false
 	}
+
 	for i := 1; i < len(name); i++ {
 		if (name[i-1] == '.' && name[i] == '-') || (name[i-1] == '-' && name[i] == '.') {
 			return false
@@ -875,33 +870,12 @@ func isValidBucketName(name string) bool {
 	}
 
 	// Bucket name must not be formatted as an IPv4 address.
-	parts := strings.Split(name, ".")
-	if len(parts) == 4 {
-		allNumeric := true
-		for _, p := range parts {
-			if p == "" {
-				return false
-			}
-			for i := 0; i < len(p); i++ {
-				if p[i] < '0' || p[i] > '9' {
-					allNumeric = false
-					break
-				}
-			}
-			if !allNumeric {
-				break
-			}
-		}
-		if allNumeric {
-			return false
-		}
+	ip := net.ParseIP(name)
+	if ip != nil {
+		return false
 	}
 
 	return true
-}
-
-func isLetterOrDigit(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
 // isValidObjectKey enforces basic S3 object key constraints: non-empty,
@@ -910,13 +884,10 @@ func isValidObjectKey(key string) bool {
 	if len(key) == 0 || len(key) > 1024 {
 		return false
 	}
-	for i := 0; i < len(key); i++ {
-		c := key[i]
-		if c < 0x20 || c == 0x7f {
-			return false
-		}
-	}
-	return true
+
+	return !strings.ContainsFunc(key, func(c rune) bool {
+		return c < 0x20 || c == 0x7f
+	})
 }
 
 // validateBucketNameOrError writes an S3 InvalidBucketName error and returns
