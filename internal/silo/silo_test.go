@@ -197,30 +197,38 @@ func TestListObjects(t *testing.T) {
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
-	// Now fetch its location.
-	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?location")
-	require.NoError(t, err, "GET bucket location error")
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket location status")
-
-	var loc struct {
-		Region string `xml:",chardata"`
+	// Upload objects with and without the prefix.
+	keys := []string{"dir/a.txt", "dir/b.txt", "other.txt"}
+	for _, key := range keys {
+		putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
+		require.NoError(t, err, "creating PUT object request")
+		putResp, err := client.Do(putReq)
+		require.NoError(t, err, "PUT object error")
+		putResp.Body.Close()
+		require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object status")
 	}
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&loc), "decoding LocationConstraint")
-	require.Equal(t, "us-east-1", strings.TrimSpace(loc.Region), "bucket region")
 
-	// List with prefix
+	// List without prefix should see all objects.
+	resp, err = client.Get(httpSrv.URL + "/" + bucket)
+	require.NoError(t, err, "GET bucket error")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket status")
+
+	var listResp ListBucketResult
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListBucketResult")
+	require.Len(t, listResp.Contents, 3, "expected all objects without prefix filter")
+
+	// List with prefix should only return the two prefixed keys.
 	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?prefix=dir/")
 	require.NoError(t, err, "GET bucket with prefix error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket with prefix status")
 
-	listResp := ListBucketResult{}
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListBucketResult with prefix")
-
-	for _, c := range listResp.Contents {
-		require.Truef(t, strings.HasPrefix(c.Key, "dir/"), "expected key with prefix 'dir/'; got %q", c.Key)
-	}
+	var listRespWithPrefix ListBucketResult
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listRespWithPrefix), "decoding ListBucketResult with prefix")
+	require.Len(t, listRespWithPrefix.Contents, 2, "expected only prefixed objects")
+	require.Equal(t, "dir/a.txt", listRespWithPrefix.Contents[0].Key, "first key with prefix")
+	require.Equal(t, "dir/b.txt", listRespWithPrefix.Contents[1].Key, "second key with prefix")
 }
 
 func TestGetBucketLocation(t *testing.T) {
