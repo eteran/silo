@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,43 @@ func TestCreateAndListBuckets(t *testing.T) {
 	}
 	for _, want := range []string{"bucket1", "bucket2"} {
 		require.Truef(t, found[want], "expected bucket %q in ListAllMyBucketsResult", want)
+	}
+}
+
+func TestInvalidBucketNames(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	tests := []struct {
+		name   string
+		bucket string
+	}{
+		{name: "too short", bucket: "ab"},
+		{name: "too long", bucket: strings.Repeat("a", 64)},
+		{name: "uppercase", bucket: "BadBucket"},
+		{name: "ip address", bucket: "192.168.0.1"},
+		{name: "leading dash", bucket: "-bucket"},
+	}
+
+	for _, tc := range tests {
+		// capture range variable
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+tc.bucket, nil)
+			require.NoError(t, err, "creating PUT request")
+
+			resp, err := client.Do(req)
+			require.NoError(t, err, "PUT bucket error")
+			defer resp.Body.Close()
+
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode, "status code")
+
+			var s3Err struct {
+				Code string `xml:"Code"`
+			}
+			require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
+			require.Equal(t, "InvalidBucketName", s3Err.Code, "S3 error code")
+		})
 	}
 }
 
@@ -151,39 +189,25 @@ func TestListObjects(t *testing.T) {
 
 	bucket := "list-bucket"
 
-	// PUT several objects.
-	objects := map[string]string{
-		"a.txt":      "aaa",
-		"dir/b.txt":  "bbb",
-		"dir/c.log":  "ccc",
-		"other/file": "ddd",
-	}
+	// Create the bucket first.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating PUT bucket request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT bucket error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
-	for key, body := range objects {
-		req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(body))))
-		require.NoErrorf(t, err, "creating PUT request for %s", key)
-		resp, err := client.Do(req)
-		require.NoErrorf(t, err, "PUT object %s error", key)
-		resp.Body.Close()
-		require.Equalf(t, http.StatusOK, resp.StatusCode, "PUT object %s status", key)
-	}
-
-	// List all objects in bucket.
-	resp, err := client.Get(httpSrv.URL + "/" + bucket)
-	require.NoError(t, err, "GET bucket error")
+	// Now fetch its location.
+	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?location")
+	require.NoError(t, err, "GET bucket location error")
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket status")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket location status")
 
-	var listResp ListBucketResult
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListBucketResult")
-
-	seen := map[string]bool{}
-	for _, c := range listResp.Contents {
-		seen[c.Key] = true
+	var loc struct {
+		Region string `xml:",chardata"`
 	}
-	for key := range objects {
-		require.Truef(t, seen[key], "expected key %q in ListBucketResult", key)
-	}
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&loc), "decoding LocationConstraint")
+	require.Equal(t, "us-east-1", strings.TrimSpace(loc.Region), "bucket region")
 
 	// List with prefix
 	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?prefix=dir/")
@@ -191,12 +215,177 @@ func TestListObjects(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket with prefix status")
 
-	listResp = ListBucketResult{}
+	listResp := ListBucketResult{}
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListBucketResult with prefix")
 
 	for _, c := range listResp.Contents {
 		require.Truef(t, strings.HasPrefix(c.Key, "dir/"), "expected key with prefix 'dir/'; got %q", c.Key)
 	}
+}
+
+func TestGetBucketLocation(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "location-bucket"
+
+	// Create the bucket first.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating PUT bucket request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT bucket error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// Now fetch its location.
+	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?location")
+	require.NoError(t, err, "GET bucket location error")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket location status")
+
+	var loc struct {
+		Region string `xml:",chardata"`
+	}
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&loc), "decoding LocationConstraint")
+	require.Equal(t, "us-east-1", strings.TrimSpace(loc.Region), "bucket region")
+}
+
+func TestListObjectsV2Pagination(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "listv2-bucket"
+
+	// Create the bucket first.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating PUT bucket request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT bucket error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// Upload three objects.
+	keys := []string{"a.txt", "b.txt", "c.txt"}
+	for _, key := range keys {
+		putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
+		require.NoError(t, err, "creating PUT object request")
+		putResp, err := client.Do(putReq)
+		require.NoError(t, err, "PUT object error")
+		putResp.Body.Close()
+		require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object status")
+	}
+
+	// First page: max-keys=2
+	listURL, err := url.Parse(httpSrv.URL + "/" + bucket)
+	require.NoError(t, err, "parsing list URL")
+	q := listURL.Query()
+	q.Set("list-type", "2")
+	q.Set("max-keys", "2")
+	listURL.RawQuery = q.Encode()
+
+	resp, err = client.Get(listURL.String())
+	require.NoError(t, err, "GET ListObjectsV2 page 1 error")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "ListObjectsV2 page 1 status")
+
+	var v2Resp ListBucketResultV2
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&v2Resp), "decoding ListBucketResultV2 page 1")
+	require.Equal(t, 2, v2Resp.KeyCount, "KeyCount page 1")
+	require.True(t, v2Resp.IsTruncated, "IsTruncated page 1")
+	require.Len(t, v2Resp.Contents, 2, "Contents length page 1")
+	require.Equal(t, "a.txt", v2Resp.Contents[0].Key, "first key page 1")
+	require.Equal(t, "b.txt", v2Resp.Contents[1].Key, "second key page 1")
+	require.NotEmpty(t, v2Resp.NextContinuationToken, "NextContinuationToken page 1")
+
+	// Second page using continuation-token
+	listURL2, err := url.Parse(httpSrv.URL + "/" + bucket)
+	require.NoError(t, err, "parsing list URL 2")
+	q2 := listURL2.Query()
+	q2.Set("list-type", "2")
+	q2.Set("continuation-token", v2Resp.NextContinuationToken)
+	listURL2.RawQuery = q2.Encode()
+
+	resp2, err := client.Get(listURL2.String())
+	require.NoError(t, err, "GET ListObjectsV2 page 2 error")
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode, "ListObjectsV2 page 2 status")
+
+	var v2Resp2 ListBucketResultV2
+	require.NoError(t, xml.NewDecoder(resp2.Body).Decode(&v2Resp2), "decoding ListBucketResultV2 page 2")
+	require.Equal(t, 1, v2Resp2.KeyCount, "KeyCount page 2")
+	require.False(t, v2Resp2.IsTruncated, "IsTruncated page 2")
+	require.Len(t, v2Resp2.Contents, 1, "Contents length page 2")
+	require.Equal(t, "c.txt", v2Resp2.Contents[0].Key, "first key page 2")
+}
+
+func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "listv2-prefix-bucket"
+
+	// Create the bucket first.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating PUT bucket request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT bucket error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// Upload objects with and without the prefix.
+	keys := []string{"dir/a.txt", "dir/b.txt", "other.txt"}
+	for _, key := range keys {
+		putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
+		require.NoError(t, err, "creating PUT object request")
+		putResp, err := client.Do(putReq)
+		require.NoError(t, err, "PUT object error")
+		putResp.Body.Close()
+		require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object status")
+	}
+
+	// List with prefix=dir/ should only return the two prefixed keys.
+	listURL, err := url.Parse(httpSrv.URL + "/" + bucket)
+	require.NoError(t, err, "parsing list URL")
+	q := listURL.Query()
+	q.Set("list-type", "2")
+	q.Set("prefix", "dir/")
+	q.Set("max-keys", "10")
+	listURL.RawQuery = q.Encode()
+
+	resp, err = client.Get(listURL.String())
+	require.NoError(t, err, "GET ListObjectsV2 with prefix error")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "ListObjectsV2 with prefix status")
+
+	var v2Resp ListBucketResultV2
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&v2Resp), "decoding ListBucketResultV2 with prefix")
+	require.Equal(t, 2, v2Resp.KeyCount, "KeyCount with prefix")
+	require.False(t, v2Resp.IsTruncated, "IsTruncated with prefix")
+	require.Len(t, v2Resp.Contents, 2, "Contents length with prefix")
+	require.Equal(t, "dir/a.txt", v2Resp.Contents[0].Key, "first key with prefix")
+	require.Equal(t, "dir/b.txt", v2Resp.Contents[1].Key, "second key with prefix")
+
+	// Now use start-after within the same prefix to skip the first key.
+	listURL2, err := url.Parse(httpSrv.URL + "/" + bucket)
+	require.NoError(t, err, "parsing list URL 2")
+	q2 := listURL2.Query()
+	q2.Set("list-type", "2")
+	q2.Set("prefix", "dir/")
+	q2.Set("start-after", "dir/a.txt")
+	q2.Set("max-keys", "10")
+	listURL2.RawQuery = q2.Encode()
+
+	resp2, err := client.Get(listURL2.String())
+	require.NoError(t, err, "GET ListObjectsV2 with start-after error")
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode, "ListObjectsV2 with start-after status")
+
+	var v2Resp2 ListBucketResultV2
+	require.NoError(t, xml.NewDecoder(resp2.Body).Decode(&v2Resp2), "decoding ListBucketResultV2 with start-after")
+	require.Equal(t, 1, v2Resp2.KeyCount, "KeyCount with start-after")
+	require.False(t, v2Resp2.IsTruncated, "IsTruncated with start-after")
+	require.Len(t, v2Resp2.Contents, 1, "Contents length with start-after")
+	require.Equal(t, "dir/b.txt", v2Resp2.Contents[0].Key, "first key with start-after")
 }
 
 func TestErrorResponsesTableDriven(t *testing.T) {
@@ -211,6 +400,14 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 		wantErrorCode  string
 		expectBody     bool
 	}{
+		{
+			name:           "NoSuchBucket on HeadBucket",
+			method:         http.MethodHead,
+			path:           "/nonexistent-bucket",
+			wantStatusCode: http.StatusNotFound,
+			wantErrorCode:  "NoSuchBucket",
+			expectBody:     false,
+		},
 		{
 			name:           "NoSuchBucket on ListObjects",
 			method:         http.MethodGet,
@@ -280,8 +477,8 @@ func TestUnknownRoutes(t *testing.T) {
 			path:   "/",
 		},
 		{
-			name:   "POST bucket",
-			method: http.MethodPost,
+			name:   "PATCH bucket",
+			method: http.MethodPatch,
 			path:   "/some-bucket",
 		},
 		{
@@ -303,6 +500,90 @@ func TestUnknownRoutes(t *testing.T) {
 			defer resp.Body.Close()
 
 			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "status code")
+		})
+	}
+}
+
+// TestNotImplementedRoutes exercises a representative set of S3-style
+// operations that are currently stubbed and should return NotImplemented.
+func TestNotImplementedRoutes(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "PutBucketTagging",
+			method: http.MethodPut,
+			path:   "/bucket?tagging",
+		},
+		{
+			name:   "DeleteBucketReplication",
+			method: http.MethodDelete,
+			path:   "/bucket?replication",
+		},
+		{
+			name:   "DeleteObjects",
+			method: http.MethodPost,
+			path:   "/bucket?delete",
+		},
+		{
+			name:   "CopyObject",
+			method: http.MethodPut,
+			path:   "/bucket/object",
+		},
+		{
+			name:   "UploadPart",
+			method: http.MethodPut,
+			path:   "/bucket/object?uploadId=123&partNumber=1",
+		},
+		{
+			name:   "GetObjectTagging",
+			method: http.MethodGet,
+			path:   "/bucket/object?tagging",
+		},
+		{
+			name:   "ListMultipartUploads",
+			method: http.MethodGet,
+			path:   "/bucket?uploads",
+		},
+		{
+			name:   "AbortMultipartUpload",
+			method: http.MethodDelete,
+			path:   "/bucket/object?uploadId=123",
+		},
+		{
+			name:   "CompleteMultipartUpload",
+			method: http.MethodPost,
+			path:   "/bucket/object?uploadId=123",
+		},
+	}
+
+	for _, tc := range tests {
+		// capture range variable
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
+			if tc.name == "CopyObject" || tc.name == "UploadPart" {
+				// Trigger copy-specific branches
+				req.Header.Set("x-amz-copy-source", "/src-bucket/src-object")
+			}
+			require.NoError(t, err, "creating request")
+
+			resp, err := client.Do(req)
+			require.NoError(t, err, "performing request")
+			defer resp.Body.Close()
+
+			require.Equal(t, http.StatusNotImplemented, resp.StatusCode, "status code")
+
+			var s3Err struct {
+				Code string `xml:"Code"`
+			}
+			require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
+			require.Equal(t, "NotImplemented", s3Err.Code, "S3 error code")
 		})
 	}
 }

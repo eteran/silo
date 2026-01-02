@@ -29,6 +29,22 @@ type ListBucketResult struct {
 	Contents    []ObjectSummary `xml:"Contents"`
 }
 
+// ListBucketResultV2 represents the XML response for the S3 ListObjectsV2
+// API.
+type ListBucketResultV2 struct {
+	XMLName               xml.Name        `xml:"ListBucketResult"`
+	XMLNS                 string          `xml:"xmlns,attr"`
+	Name                  string          `xml:"Name"`
+	Prefix                string          `xml:"Prefix"`
+	KeyCount              int             `xml:"KeyCount"`
+	MaxKeys               int             `xml:"MaxKeys"`
+	IsTruncated           bool            `xml:"IsTruncated"`
+	ContinuationToken     string          `xml:"ContinuationToken,omitempty"`
+	NextContinuationToken string          `xml:"NextContinuationToken,omitempty"`
+	StartAfter            string          `xml:"StartAfter,omitempty"`
+	Contents              []ObjectSummary `xml:"Contents"`
+}
+
 // ObjectSummary is a single entry in a ListBucketResult.
 type ObjectSummary struct {
 	Key          string `xml:"Key"`
