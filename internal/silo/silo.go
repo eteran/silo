@@ -25,6 +25,8 @@ type Config struct {
 	DataDir string
 	// DBPath is the path to the SQLite metadata database.
 	DBPath string
+
+	Region string
 }
 
 // Server provides a minimal S3-compatible HTTP API backed by the local
@@ -43,6 +45,10 @@ func NewServer(cfg Config) (*Server, error) {
 
 	if cfg.DBPath == "" {
 		return nil, errors.New("DBPath must not be empty")
+	}
+
+	if cfg.Region == "" {
+		cfg.Region = "us-east-1"
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
@@ -151,8 +157,7 @@ func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, buck
 }
 
 // handleBucketGet dispatches GET /bucket[?subresource] between ListObjects
-// and bucket-level read APIs. Only ListObjects is implemented; the rest
-// return NotImplemented.
+// and bucket-level read APIs.
 func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
@@ -189,8 +194,7 @@ func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket 
 	}
 }
 
-// handleGetBucketLocation implements GET /bucket?location, returning a
-// constant region for all buckets.
+// handleGetBucketLocation implements GET /bucket?location
 func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request, bucket string) {
 	// Ensure bucket exists.
 	var bucketName string
@@ -199,6 +203,7 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
+
 	if err != nil {
 		slog.Error("Get bucket location", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -213,7 +218,7 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 
 	resp := locationConstraint{
 		XMLNS:  s3XMLNamespace,
-		Region: "us-east-1",
+		Region: s.cfg.Region,
 	}
 
 	w.Header().Set("Content-Type", "application/xml")
