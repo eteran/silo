@@ -33,6 +33,8 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 }
 
 func TestCreateAndListBuckets(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 
 	client := httpSrv.Client()
@@ -65,6 +67,7 @@ func TestCreateAndListBuckets(t *testing.T) {
 }
 
 func TestInvalidBucketNames(t *testing.T) {
+	t.Parallel()
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -102,6 +105,8 @@ func TestInvalidBucketNames(t *testing.T) {
 }
 
 func TestPutGetHeadDeleteObject(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -183,6 +188,8 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 }
 
 func TestListObjects(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -231,6 +238,8 @@ func TestListObjects(t *testing.T) {
 }
 
 func TestGetBucketLocation(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -258,6 +267,8 @@ func TestGetBucketLocation(t *testing.T) {
 }
 
 func TestListObjectsV2Pagination(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -326,6 +337,8 @@ func TestListObjectsV2Pagination(t *testing.T) {
 }
 
 func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -396,6 +409,8 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 }
 
 func TestErrorResponsesTableDriven(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -470,6 +485,8 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 // for otherwise valid paths return 405 Method Not Allowed from the standard
 // library router.
 func TestUnknownRoutes(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
@@ -514,6 +531,8 @@ func TestUnknownRoutes(t *testing.T) {
 // TestNotImplementedRoutes exercises a representative set of S3-style
 // operations that are currently stubbed and should return NotImplemented.
 func TestNotImplementedRoutes(t *testing.T) {
+	t.Parallel()
+
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
