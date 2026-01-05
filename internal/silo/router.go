@@ -1,6 +1,39 @@
 package silo
 
-import "net/http"
+import (
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+// logRequest is middleware that logs incoming HTTP requests.
+func logRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var (
+			ip     = r.RemoteAddr
+			method = r.Method
+			url    = r.URL.String()
+			proto  = r.Proto
+		)
+
+		start := time.Now() // Record the start time
+		next.ServeHTTP(w, r)
+		elapsed := time.Since(start) // Calculate the elapsed duration
+
+		userAttrs := slog.Group("user", "ip", ip)
+		requestAttrs := slog.Group("request", "method", method, "url", url, "proto", proto, "duration_ms", float64(elapsed.Nanoseconds())/float64(time.Millisecond))
+		slog.Info("Request", userAttrs, requestAttrs)
+
+	})
+}
+
+// requireAuthentication is middleware that enforces authentication for S3 API requests.
+func requireAuthentication(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// TODO(eteran): Implement authentication check.
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Handler returns an http.Handler implementing the S3/MinIO API.
 func (s *Server) Handler() http.Handler {
@@ -58,5 +91,5 @@ func (s *Server) Handler() http.Handler {
 		s.handleObjectPost(w, r, bucket, key)
 	})
 
-	return mux
+	return logRequest(requireAuthentication(mux))
 }

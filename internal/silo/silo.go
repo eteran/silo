@@ -29,8 +29,7 @@ type Config struct {
 	Engine  StorageEngine
 }
 
-// Server provides a minimal S3-compatible HTTP API backed by the local
-// filesystem for object storage and SQLite for metadata.
+// Server provides a minimal S3-compatible HTTP API.
 type Server struct {
 	cfg Config
 	db  *sql.DB
@@ -70,10 +69,12 @@ func NewServer(cfg Config) (*Server, error) {
 	return &Server{cfg: cfg, db: db}, nil
 }
 
+// Close closes any resources held by the Server.
 func (s *Server) Close() error {
 	return s.db.Close()
 }
 
+// initSchema initializes the metadata database schema.
 func initSchema(db *sql.DB) error {
 	stmts := []string{
 		`PRAGMA foreign_keys = ON;`,
@@ -106,6 +107,7 @@ func initSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_objects_hash ON objects(hash);`,
 		`CREATE INDEX IF NOT EXISTS idx_objects_parent ON objects(bucket, parent, key);`,
 	}
+
 	for _, stmt := range indexStmts {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("init schema indexes: %w", err)
@@ -115,8 +117,7 @@ func initSchema(db *sql.DB) error {
 }
 
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
-// and various bucket configuration APIs. Only CreateBucket is implemented; the
-// rest return NotImplemented.
+// and various bucket configuration APIs.
 func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
@@ -145,6 +146,7 @@ func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 }
 
+// handleCreateBucket implements PUT /bucket to create a new bucket.
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
