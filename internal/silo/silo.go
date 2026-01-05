@@ -1,6 +1,7 @@
 package silo
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -333,11 +334,40 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		slog.Error("Read request body", "err", err)
-		writeS3Error(w, "InvalidRequest", "Failed to read request body", r.URL.Path, http.StatusBadRequest)
-		return
+	var (
+		data []byte
+		err  error
+	)
+
+	contentSHA := r.Header.Get("X-Amz-Content-Sha256")
+	if strings.EqualFold(contentSHA, "STREAMING-AWS4-HMAC-SHA256-PAYLOAD") {
+		decodedLenStr := r.Header.Get("X-Amz-Decoded-Content-Length")
+		if decodedLenStr == "" {
+			slog.Error("Missing X-Amz-Decoded-Content-Length for streaming payload")
+			writeS3Error(w, "InvalidRequest", "Missing X-Amz-Decoded-Content-Length for streaming payload", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		decodedLen, parseErr := strconv.ParseInt(decodedLenStr, 10, 64)
+		if parseErr != nil || decodedLen < 0 {
+			slog.Error("Invalid X-Amz-Decoded-Content-Length", "value", decodedLenStr, "err", parseErr)
+			writeS3Error(w, "InvalidRequest", "Invalid X-Amz-Decoded-Content-Length", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		data, err = readStreamingV4Payload(r.Body, decodedLen)
+		if err != nil {
+			slog.Error("Decode streaming payload", "err", err)
+			writeS3Error(w, "InvalidRequest", "Failed to decode streaming payload", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+	} else {
+		data, err = io.ReadAll(r.Body)
+		if err != nil {
+			slog.Error("Read request body", "err", err)
+			writeS3Error(w, "InvalidRequest", "Failed to read request body", r.URL.Path, http.StatusBadRequest)
+			return
+		}
 	}
 	defer r.Body.Close()
 
@@ -375,6 +405,80 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	w.Header().Set("ETag", createETag(hashHex))
 	w.WriteHeader(http.StatusOK)
+}
+
+// readStreamingV4Payload decodes an AWS Signature Version 4 streaming
+// (chunked) payload into a contiguous byte slice. The decodedLen parameter
+// should be taken from the X-Amz-Decoded-Content-Length header.
+func readStreamingV4Payload(body io.Reader, decodedLen int64) ([]byte, error) {
+	br := bufio.NewReader(body)
+	buf := make([]byte, 0, decodedLen)
+
+	for {
+		// Each chunk begins with: <size-hex>[;extensions]\r\n
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("unexpected EOF while reading chunk header")
+			}
+			return nil, fmt.Errorf("read chunk header: %w", err)
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			// Skip empty lines if any.
+			continue
+		}
+
+		// Strip any chunk extensions (e.g. ";chunk-signature=...").
+		if idx := strings.IndexByte(line, ';'); idx != -1 {
+			line = line[:idx]
+		}
+
+		sizeHex := strings.TrimSpace(line)
+		size, err := strconv.ParseInt(sizeHex, 16, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse chunk size %q: %w", sizeHex, err)
+		}
+
+		if size == 0 {
+			// Final chunk. Per AWS streaming format, this is followed by a
+			// trailing CRLF and optional trailers. For our purposes we can
+			// consume a single empty line and stop.
+			_, _ = br.ReadString('\n') // best-effort consume trailer terminator
+			break
+		}
+
+		chunk := make([]byte, size)
+		if _, err := io.ReadFull(br, chunk); err != nil {
+			return nil, fmt.Errorf("read chunk body: %w", err)
+		}
+		buf = append(buf, chunk...)
+
+		// Consume the trailing CRLF after the chunk body.
+		if b, err := br.ReadByte(); err != nil || b != '\r' {
+			if err == nil {
+				return nil, fmt.Errorf("expected CR after chunk, got %q", b)
+			}
+			return nil, fmt.Errorf("read CR after chunk: %w", err)
+		}
+		if b, err := br.ReadByte(); err != nil || b != '\n' {
+			if err == nil {
+				return nil, fmt.Errorf("expected LF after chunk, got %q", b)
+			}
+			return nil, fmt.Errorf("read LF after chunk: %w", err)
+		}
+	}
+
+	// If decodedLen was provided, use it as a sanity check but do not
+	// fail hard if it does not match exactly – some clients may omit or
+	// mis-report it. The storage layer relies on the actual length we
+	// decoded.
+	if decodedLen >= 0 && int64(len(buf)) != decodedLen {
+		slog.Debug("Decoded streaming payload length mismatch", "expected", decodedLen, "actual", len(buf))
+	}
+
+	return buf, nil
 }
 
 // handleGetObject implements GET /bucket/key to retrieve an object.
