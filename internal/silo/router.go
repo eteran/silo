@@ -3,6 +3,7 @@ package silo
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -89,6 +90,19 @@ func requireAuthentication(next http.Handler) http.Handler {
 	})
 }
 
+func SlashFix(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Replace all occurrences of "//" with "/" in the URL path
+		r.URL.Path = strings.ReplaceAll(r.URL.Path, "//", "/")
+
+		if r.URL.Path != "/" && strings.HasSuffix(r.URL.Path, "/") {
+			r.URL.Path = strings.TrimSuffix(r.URL.Path, "/")
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Handler returns an http.Handler implementing the S3/MinIO API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -105,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 		bucket := r.PathValue("bucket")
 		s.handleBucketGet(w, r, bucket)
 	})
+
 	mux.HandleFunc("HEAD /{bucket}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		s.handleHeadBucket(w, r, bucket)
@@ -145,5 +160,5 @@ func (s *Server) Handler() http.Handler {
 		s.handleObjectPost(w, r, bucket, key)
 	})
 
-	return logRequest(requireAuthentication(mux))
+	return logRequest(requireAuthentication(SlashFix(mux)))
 }

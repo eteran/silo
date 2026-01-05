@@ -453,7 +453,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 
 // handleCopyObject implements a basic version of S3 CopyObject for
 // non-multipart copies without conditional headers.
-func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBucket, destKey, copySource string) {
+func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBucket string, destKey string, copySource string) {
 	// Parse x-amz-copy-source, which is typically of the form
 	// "/source-bucket/source-key" or "source-bucket/source-key" and may be
 	// URL-encoded and include a query string.
@@ -611,7 +611,7 @@ func (s *Server) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket
 
 // handleHeadObject implements HEAD /bucket/key, returning metadata headers
 // compatible with S3 but without a response body.
-func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
+func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
@@ -791,6 +791,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	}
 
 	// Ensure bucket exists.
+	// TODO(eteran): likely unnecessary...
 	var bucketName string
 	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
 	if errors.Is(err, sql.ErrNoRows) {
