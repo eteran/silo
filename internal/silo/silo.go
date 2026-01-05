@@ -924,7 +924,7 @@ func (s *Server) writeNotImplemented(w http.ResponseWriter, r *http.Request, op 
 }
 
 // writeS3Error writes a minimal S3-style XML error response.
-func writeS3Error(w http.ResponseWriter, code, message, resource string, status int) {
+func writeS3Error(w http.ResponseWriter, code string, message string, resource string, status int) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
 	_ = xml.NewEncoder(w).Encode(S3Error{

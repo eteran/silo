@@ -31,6 +31,7 @@ func (w *ResponseWriterWrapper) Write(b []byte) (int, error) {
 // logRequest is middleware that logs incoming HTTP requests.
 func logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
 		ip := r.RemoteAddr
 		method := r.Method
 		url := r.URL.String()
@@ -55,13 +56,35 @@ func logRequest(next http.Handler) http.Handler {
 			slog.Info("Request", userAttrs, requestAttrs)
 		}
 
+		if false {
+			var headerAttrs []any
+			for key, values := range r.Header {
+				for _, value := range values {
+					if key == "Authorization" || key == "Cookie" {
+						value = "[REDACTED]"
+					}
+					headerAttrs = append(headerAttrs, slog.String(key, value))
+				}
+			}
+
+			slog.Debug("Request Headers", slog.Group("headers", headerAttrs...))
+		}
+
 	})
 }
 
 // requireAuthentication is middleware that enforces authentication for S3 API requests.
 func requireAuthentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		auth := r.Header.Get("Authorization")
+
 		// TODO(eteran): Implement authentication check.
+		if auth == "" {
+			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path, http.StatusForbidden)
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
