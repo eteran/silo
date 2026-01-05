@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+// ResponseWriterWrapper is a wrapper around the default http.ResponseWriter.
+// It intercepts the WriteHeader call and saves the response status code.
+type ResponseWriterWrapper struct {
+	http.ResponseWriter
+	WrittenResponseCode int
+}
+
+// WriteHeader intercepts the status code and stores it, then calls the original WriteHeader.
+func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
+	w.WrittenResponseCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+// Write calls the underlying ResponseWriter's Write method.
+// It is also needed for the http.ResponseWriter interface.
+func (w *ResponseWriterWrapper) Write(b []byte) (int, error) {
+	if w.WrittenResponseCode == 0 {
+		w.WrittenResponseCode = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
 // logRequest is middleware that logs incoming HTTP requests.
 func logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -15,12 +37,23 @@ func logRequest(next http.Handler) http.Handler {
 		proto := r.Proto
 
 		start := time.Now()
-		next.ServeHTTP(w, r)
+
+		writer := ResponseWriterWrapper{ResponseWriter: w}
+
+		next.ServeHTTP(&writer, r)
 		elapsed := time.Since(start).Nanoseconds()
 
 		userAttrs := slog.Group("user", "ip", ip)
-		requestAttrs := slog.Group("request", "method", method, "url", url, "proto", proto, "duration_ms", float64(elapsed)/float64(time.Millisecond))
-		slog.Info("Request", userAttrs, requestAttrs)
+		requestAttrs := slog.Group("request", "proto", proto, "method", method, "url", url, "duration_ms", float64(elapsed)/float64(time.Millisecond), "status_code", writer.WrittenResponseCode)
+
+		switch {
+		case writer.WrittenResponseCode >= 500:
+			slog.Error("Request", userAttrs, requestAttrs)
+		case writer.WrittenResponseCode >= 400:
+			slog.Error("Request", userAttrs, requestAttrs)
+		default:
+			slog.Info("Request", userAttrs, requestAttrs)
+		}
 
 	})
 }
