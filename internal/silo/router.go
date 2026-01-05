@@ -9,19 +9,17 @@ import (
 // logRequest is middleware that logs incoming HTTP requests.
 func logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var (
-			ip     = r.RemoteAddr
-			method = r.Method
-			url    = r.URL.String()
-			proto  = r.Proto
-		)
+		ip := r.RemoteAddr
+		method := r.Method
+		url := r.URL.String()
+		proto := r.Proto
 
-		start := time.Now() // Record the start time
+		start := time.Now()
 		next.ServeHTTP(w, r)
-		elapsed := time.Since(start) // Calculate the elapsed duration
+		elapsed := time.Since(start).Nanoseconds()
 
 		userAttrs := slog.Group("user", "ip", ip)
-		requestAttrs := slog.Group("request", "method", method, "url", url, "proto", proto, "duration_ms", float64(elapsed.Nanoseconds())/float64(time.Millisecond))
+		requestAttrs := slog.Group("request", "method", method, "url", url, "proto", proto, "duration_ms", float64(elapsed)/float64(time.Millisecond))
 		slog.Info("Request", userAttrs, requestAttrs)
 
 	})
