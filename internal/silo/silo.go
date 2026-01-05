@@ -146,16 +146,22 @@ func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 }
 
+// ensureBucket makes sure the given bucket exists, creating it if necessary.
+func (s *Server) ensureBucket(name string) (sql.Result, error) {
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO buckets(name, created_at) VALUES(?, ?)`,
+		name, time.Now().UTC(),
+	)
+	return res, err
+}
+
 // handleCreateBucket implements PUT /bucket to create a new bucket.
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
-	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO buckets(name, created_at) VALUES(?, ?)`,
-		bucket, time.Now().UTC(),
-	)
+	res, err := s.ensureBucket(bucket)
 	if err != nil {
 		slog.Error("Create bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -226,24 +232,17 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	type locationConstraint struct {
-		XMLName xml.Name `xml:"LocationConstraint"`
-		XMLNS   string   `xml:"xmlns,attr"`
-		Region  string   `xml:",chardata"`
-	}
-
-	resp := locationConstraint{
+	resp := LocationConstraint{
 		XMLNS:  s3XMLNamespace,
 		Region: s.cfg.Region,
 	}
 
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	if err := xml.NewEncoder(w).Encode(resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode bucket location XML", "bucket", bucket, "err", err)
 	}
 }
 
+// handleListBuckets implements GET / to list all buckets.
 func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(`SELECT name, created_at FROM buckets ORDER BY name`)
 	if err != nil {
@@ -284,13 +283,12 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	if err := xml.NewEncoder(w).Encode(resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list buckets XML", "err", err)
 	}
 }
 
+// handlePutObject implements PUT /bucket/key to store an object.
 func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
@@ -301,7 +299,6 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	q := r.URL.Query()
 
-	// Multipart UploadPart / UploadPartCopy
 	if uploadID := q.Get("uploadId"); uploadID != "" {
 		if partNumber := q.Get("partNumber"); partNumber != "" {
 			if r.Header.Get("x-amz-copy-source") != "" {
@@ -313,13 +310,11 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		}
 	}
 
-	// PutObjectTagging
 	if q.Has("tagging") {
 		s.writeNotImplemented(w, r, "PutObjectTagging")
 		return
 	}
 
-	// Simple CopyObject (non-multipart)
 	if r.Header.Get("x-amz-copy-source") != "" {
 		s.writeNotImplemented(w, r, "CopyObject")
 		return
@@ -331,7 +326,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	}
 
 	// Ensure bucket exists; for convenience, auto-create if missing.
-	if err := s.ensureBucket(bucket); err != nil {
+	if _, err := s.ensureBucket(bucket); err != nil {
 		slog.Error("Ensure bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -381,6 +376,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleGetObject implements GET /bucket/key to retrieve an object.
 func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
@@ -413,10 +409,12 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
 		bucket, key,
 	).Scan(&hashHex, &size, &contentType, &createdAt)
+
 	if errors.Is(err, sql.ErrNoRows) {
 		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
+
 	if err != nil {
 		slog.Error("Lookup object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -452,6 +450,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 	}
 }
 
+// handleDeleteObject implements DELETE /bucket/key to delete an object.
 func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
@@ -480,14 +479,6 @@ func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, buck
 	// Note: we intentionally do not garbage-collect unreferenced payload
 	// files yet. That can be added later based on hash reference counts.
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) ensureBucket(name string) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO buckets(name, created_at) VALUES(?, ?)`,
-		name, time.Now().UTC(),
-	)
-	return err
 }
 
 // handleHeadBucket implements HEAD /bucket.
@@ -682,9 +673,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 		Contents:    summaries,
 	}
 
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	if err := xml.NewEncoder(w).Encode(resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list objects XML", "bucket", bucket, "err", err)
 	}
 }
@@ -795,9 +784,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		Contents:              summaries,
 	}
 
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	if err := xml.NewEncoder(w).Encode(resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list objects v2 XML", "bucket", bucket, "err", err)
 	}
 }
@@ -920,4 +907,14 @@ func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string
 		return false
 	}
 	return true
+}
+
+func writeXMLResponse(w http.ResponseWriter, v any) error {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	if err := xml.NewEncoder(w).Encode(v); err != nil {
+		return err
+	}
+
+	return nil
 }

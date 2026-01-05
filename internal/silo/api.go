@@ -60,3 +60,9 @@ type S3Error struct {
 	Message  string   `xml:"Message"`
 	Resource string   `xml:"Resource"`
 }
+
+type LocationConstraint struct {
+	XMLName xml.Name `xml:"LocationConstraint"`
+	XMLNS   string   `xml:"xmlns,attr"`
+	Region  string   `xml:",chardata"`
+}
