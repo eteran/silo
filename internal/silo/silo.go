@@ -372,7 +372,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 
-	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", hashHex))
+	w.Header().Set("ETag", createETag(hashHex))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -441,7 +441,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
 	}
 	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
-	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", hashHex))
+	w.Header().Set("ETag", createETag(hashHex))
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	w.WriteHeader(http.StatusOK)
@@ -544,7 +544,7 @@ func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
-	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", hashHex))
+	w.Header().Set("ETag", createETag(hashHex))
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	w.WriteHeader(http.StatusOK)
@@ -652,7 +652,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 		summaries = append(summaries, ObjectSummary{
 			Key:          key,
 			LastModified: createdAt.UTC().Format(time.RFC3339),
-			ETag:         fmt.Sprintf("\"%s\"", hashHex),
+			ETag:         createETag(hashHex),
 			Size:         size,
 			StorageClass: "STANDARD",
 		})
@@ -753,7 +753,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		summaries = append(summaries, ObjectSummary{
 			Key:          key,
 			LastModified: createdAt.UTC().Format(time.RFC3339),
-			ETag:         fmt.Sprintf("\"%s\"", hashHex),
+			ETag:         createETag(hashHex),
 			Size:         size,
 			StorageClass: "STANDARD",
 		})
@@ -909,6 +909,7 @@ func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string
 	return true
 }
 
+// writeXMLResponse encodes v as XML and writes it to w with a 200 OK status.
 func writeXMLResponse(w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
@@ -917,4 +918,9 @@ func writeXMLResponse(w http.ResponseWriter, v any) error {
 	}
 
 	return nil
+}
+
+// createETag formats a hash hex string as an ETag value.
+func createETag(hashHex string) string {
+	return fmt.Sprintf("\"%s\"", hashHex)
 }
