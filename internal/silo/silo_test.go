@@ -176,7 +176,7 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.cfg.DataDir, subdir, hashHex)
+	objPath := filepath.Join(srv.cfg.DataDir, bucket, subdir, hashHex)
 
 	_, err = os.Stat(objPath)
 	require.NoErrorf(t, err, "expected object file at %s", objPath)

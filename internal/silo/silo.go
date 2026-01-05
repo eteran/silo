@@ -345,7 +345,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	sum := sha256.Sum256(data)
 	hashHex := hex.EncodeToString(sum[:])
-	if err := s.cfg.Engine.PutObject(hashHex, data); err != nil {
+	if err := s.cfg.Engine.PutObject(bucket, hashHex, data); err != nil {
 		slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -421,7 +421,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 
-	data, err := s.cfg.Engine.GetObject(hashHex)
+	data, err := s.cfg.Engine.GetObject(bucket, hashHex)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "object payload missing", http.StatusInternalServerError)
