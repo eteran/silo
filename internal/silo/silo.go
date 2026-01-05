@@ -24,12 +24,9 @@ import (
 
 var bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
 
-// Config holds configuration for the local S3-compatible server.
 type Config struct {
-	// DataDir is the root directory where object payloads are stored.
 	DataDir string
-
-	Region string
+	Region  string
 }
 
 // Server provides a minimal S3-compatible HTTP API backed by the local
@@ -83,6 +80,7 @@ func initSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS objects (
 			bucket TEXT NOT NULL,
 			key TEXT NOT NULL,
+			parent TEXT NOT NULL,
 			hash TEXT NOT NULL,
 			size INTEGER NOT NULL,
 			content_type TEXT,
@@ -90,12 +88,23 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (bucket, key),
 			FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_objects_hash ON objects(hash);`,
 	}
 
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("init schema: %w", err)
+		}
+	}
+
+	// Create indexes used for lookups by content hash and for efficient
+	// prefix-based listings (bucket + parent + key).
+	indexStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_objects_hash ON objects(hash);`,
+		`CREATE INDEX IF NOT EXISTS idx_objects_parent ON objects(bucket, parent, key);`,
+	}
+	for _, stmt := range indexStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("init schema indexes: %w", err)
 		}
 	}
 	return nil
@@ -352,15 +361,18 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		contentType = "application/octet-stream"
 	}
 
+	parent := parentPrefixForKey(key)
+
 	_, err = s.db.Exec(
-		`INSERT INTO objects(bucket, key, hash, size, content_type, created_at)
-		 VALUES(?, ?, ?, ?, ?, ?)
+		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bucket, key) DO UPDATE SET
+		 	parent=excluded.parent,
 		 	hash=excluded.hash,
 		 	size=excluded.size,
 		 	content_type=excluded.content_type,
 		 	created_at=excluded.created_at`,
-		bucket, key, hashHex, len(data), contentType, time.Now().UTC(),
+		bucket, key, parent, hashHex, len(data), contentType, time.Now().UTC(),
 	)
 	if err != nil {
 		slog.Error("Upsert object metadata", "bucket", bucket, "key", key, "err", err)
@@ -829,17 +841,27 @@ func (s *Server) writeNotImplemented(w http.ResponseWriter, r *http.Request, op 
 func writeS3Error(w http.ResponseWriter, code, message, resource string, status int) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	type s3Error struct {
-		XMLName  xml.Name `xml:"Error"`
-		Code     string   `xml:"Code"`
-		Message  string   `xml:"Message"`
-		Resource string   `xml:"Resource"`
-	}
-	_ = xml.NewEncoder(w).Encode(s3Error{
+	_ = xml.NewEncoder(w).Encode(S3Error{
 		Code:     code,
 		Message:  message,
 		Resource: resource,
 	})
+}
+
+// parentPrefixForKey returns the immediate parent prefix for a given S3
+// object key. For example:
+//
+//	"a/b/c.txt" -> "a/b/"
+//	"file.txt"  -> ""
+//	"dir/"      -> "" (treated as a top-level key whose name ends with '/')
+func parentPrefixForKey(key string) string {
+	trimmed := strings.TrimRight(key, "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx == -1 {
+		return ""
+	}
+	// Include the trailing slash from the original key up to and including idx.
+	return key[:idx+1]
 }
 
 // isValidBucketName implements the standard S3 bucket naming rules for

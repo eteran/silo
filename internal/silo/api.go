@@ -53,3 +53,10 @@ type ObjectSummary struct {
 	Size         int64  `xml:"Size"`
 	StorageClass string `xml:"StorageClass"`
 }
+
+type S3Error struct {
+	XMLName  xml.Name `xml:"Error"`
+	Code     string   `xml:"Code"`
+	Message  string   `xml:"Message"`
+	Resource string   `xml:"Resource"`
+}
