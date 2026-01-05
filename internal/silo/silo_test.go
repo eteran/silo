@@ -266,6 +266,224 @@ func TestGetBucketLocation(t *testing.T) {
 	require.Equal(t, "us-east-1", strings.TrimSpace(loc.Region), "bucket region")
 }
 
+func TestCopyObjectWithinBucket(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "copy-bucket"
+	srcKey := "src.txt"
+	dstKey := "dst.txt"
+	body := []byte("copy-me")
+
+	// PUT source object (auto-creates bucket).
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+srcKey, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT source request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT source error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
+
+	// Copy within the same bucket using x-amz-copy-source.
+	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+dstKey, nil)
+	require.NoError(t, err, "creating CopyObject request")
+	copyReq.Header.Set("x-amz-copy-source", "/"+bucket+"/"+srcKey)
+	copyResp, err := client.Do(copyReq)
+	require.NoError(t, err, "CopyObject error")
+	copyResp.Body.Close()
+	require.Equal(t, http.StatusOK, copyResp.StatusCode, "CopyObject status")
+
+	// GET destination should return the same payload.
+	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + dstKey)
+	require.NoError(t, err, "GET copied object error")
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET copied object status")
+
+	data, err := io.ReadAll(getResp.Body)
+	require.NoError(t, err, "reading copied object body")
+	require.Equal(t, body, data, "copied payload mismatch")
+
+	// Verify that the payload file exists in the expected location for this bucket.
+	sum := sha256.Sum256(body)
+	hashHex := hex.EncodeToString(sum[:])
+	subdir := hashHex[:2]
+	path := filepath.Join(srv.cfg.DataDir, bucket, subdir, hashHex)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err, "expected payload file to exist")
+	require.False(t, info.IsDir(), "payload path should be a file")
+}
+
+func TestCopyObjectAcrossBucketsCreatesHardLink(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	srcBucket := "src-bucket"
+	dstBucket := "dst-bucket"
+	key := "file.bin"
+	body := []byte("shared-copy-payload")
+
+	// PUT source object into src bucket.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT source request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT source error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
+
+	// Copy to destination bucket.
+	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	require.NoError(t, err, "creating CopyObject request")
+	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
+	copyResp, err := client.Do(copyReq)
+	require.NoError(t, err, "CopyObject error")
+	copyResp.Body.Close()
+	require.Equal(t, http.StatusOK, copyResp.StatusCode, "CopyObject status")
+
+	// Both buckets should reference hard-linked files on disk.
+	sum := sha256.Sum256(body)
+	hashHex := hex.EncodeToString(sum[:])
+	subdir := hashHex[:2]
+	pathSrc := filepath.Join(srv.cfg.DataDir, srcBucket, subdir, hashHex)
+	pathDst := filepath.Join(srv.cfg.DataDir, dstBucket, subdir, hashHex)
+
+	infoSrc, err := os.Stat(pathSrc)
+	require.NoError(t, err, "expected source payload file")
+	infoDst, err := os.Stat(pathDst)
+	require.NoError(t, err, "expected dest payload file")
+
+	require.Equal(t, infoSrc.Size(), infoDst.Size(), "sizes should match for hard-linked files")
+	require.True(t, os.SameFile(infoSrc, infoDst), "files should be hard-linked (same inode)")
+}
+
+func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "missing-payload-bucket"
+	key := "file.bin"
+	body := []byte("payload-to-delete")
+
+	// PUT object (auto-creates bucket and metadata).
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT object error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
+
+	// Delete the underlying payload file from disk while leaving metadata.
+	sum := sha256.Sum256(body)
+	hashHex := hex.EncodeToString(sum[:])
+	subdir := hashHex[:2]
+	objPath := filepath.Join(srv.cfg.DataDir, bucket, subdir, hashHex)
+	require.NoError(t, os.Remove(objPath), "removing payload file")
+
+	// GET should now fail with 500 Internal Server Error due to missing payload.
+	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key)
+	require.NoError(t, err, "GET object error")
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusInternalServerError, getResp.StatusCode, "GET status for missing payload")
+}
+
+func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	srcBucket := "src-bucket-missing"
+	dstBucket := "dst-bucket-missing"
+	key := "file.bin"
+
+	// Do not PUT any source object; CopyObject should fail with NoSuchKey.
+	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	require.NoError(t, err, "creating CopyObject request")
+	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
+
+	copyResp, err := client.Do(copyReq)
+	require.NoError(t, err, "CopyObject error")
+	defer copyResp.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, copyResp.StatusCode, "CopyObject status for missing source")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(copyResp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchKey", s3Err.Code, "expected NoSuchKey error code")
+}
+
+func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	dstBucket := "dst-bucket-invalid-source"
+	key := "file.bin"
+
+	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	require.NoError(t, err, "creating CopyObject request")
+	// Missing bucket/key separator; handler should consider this invalid.
+	copyReq.Header.Set("x-amz-copy-source", "invalid-source")
+
+	copyResp, err := client.Do(copyReq)
+	require.NoError(t, err, "CopyObject error")
+	defer copyResp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, copyResp.StatusCode, "CopyObject status for invalid source header")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(copyResp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "InvalidRequest", s3Err.Code, "expected InvalidRequest error code")
+}
+
+func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	srcBucket := "src-bucket-missing-payload"
+	dstBucket := "dst-bucket-missing-payload"
+	key := "file.bin"
+	body := []byte("payload-to-delete-for-copy")
+
+	// PUT source object.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT source request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT source error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
+
+	// Delete the underlying payload file for the source object.
+	sum := sha256.Sum256(body)
+	hashHex := hex.EncodeToString(sum[:])
+	subdir := hashHex[:2]
+	srcPath := filepath.Join(srv.cfg.DataDir, srcBucket, subdir, hashHex)
+	require.NoError(t, os.Remove(srcPath), "removing source payload file")
+
+	// Attempt to CopyObject; metadata exists but payload is gone.
+	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	require.NoError(t, err, "creating CopyObject request")
+	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
+
+	copyResp, err := client.Do(copyReq)
+	require.NoError(t, err, "CopyObject error")
+	defer copyResp.Body.Close()
+
+	require.Equal(t, http.StatusInternalServerError, copyResp.StatusCode, "CopyObject status for missing payload on source")
+}
+
 func TestListObjectsV2Pagination(t *testing.T) {
 	t.Parallel()
 
@@ -557,11 +775,6 @@ func TestNotImplementedRoutes(t *testing.T) {
 			path:   "/bucket?delete",
 		},
 		{
-			name:   "CopyObject",
-			method: http.MethodPut,
-			path:   "/bucket/object",
-		},
-		{
 			name:   "UploadPart",
 			method: http.MethodPut,
 			path:   "/bucket/object?uploadId=123&partNumber=1",
@@ -593,7 +806,7 @@ func TestNotImplementedRoutes(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
-			if tc.name == "CopyObject" || tc.name == "UploadPart" {
+			if tc.name == "UploadPart" {
 				// Trigger copy-specific branches
 				req.Header.Set("x-amz-copy-source", "/src-bucket/src-object")
 			}

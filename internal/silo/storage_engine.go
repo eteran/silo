@@ -10,6 +10,12 @@ type StorageEngine interface {
 	// given bucket and SHA-256 hexadecimal hash.
 	GetObject(bucket string, hashHex string) ([]byte, error)
 
+	// CopyObject ensures that the payload identified by hashHex is present in
+	// the destination bucket, reusing storage where possible. Implementations
+	// are expected to avoid reading and rewriting the payload when a more
+	// efficient mechanism (such as hard links) is available.
+	CopyObject(srcBucket, hashHex, destBucket string) error
+
 	// DeleteObject removes the payload associated with the given hash in the
 	// specified bucket. The current implementation of LocalFileStorage keeps
 	// this as a no-op so that unreferenced payloads can be garbage-collected

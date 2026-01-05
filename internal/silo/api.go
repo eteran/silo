@@ -66,3 +66,10 @@ type LocationConstraint struct {
 	XMLNS   string   `xml:"xmlns,attr"`
 	Region  string   `xml:",chardata"`
 }
+
+type CopyObjectResult struct {
+	XMLName      xml.Name `xml:"CopyObjectResult"`
+	XMLNS        string   `xml:"xmlns,attr"`
+	LastModified string   `xml:"LastModified"`
+	ETag         string   `xml:"ETag"`
+}

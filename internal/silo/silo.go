@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -315,8 +316,8 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 
-	if r.Header.Get("x-amz-copy-source") != "" {
-		s.writeNotImplemented(w, r, "CopyObject")
+	if copySource := r.Header.Get("x-amz-copy-source"); copySource != "" {
+		s.handleCopyObject(w, r, bucket, key, copySource)
 		return
 	}
 
@@ -447,6 +448,110 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(data); err != nil {
 		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
+	}
+}
+
+// handleCopyObject implements a basic version of S3 CopyObject for
+// non-multipart copies without conditional headers.
+func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBucket, destKey, copySource string) {
+	// Parse x-amz-copy-source, which is typically of the form
+	// "/source-bucket/source-key" or "source-bucket/source-key" and may be
+	// URL-encoded and include a query string.
+	src := copySource
+	if i := strings.Index(src, "?"); i != -1 {
+		src = src[:i]
+	}
+	src = strings.TrimPrefix(src, "/")
+	decoded, err := url.PathUnescape(src)
+	if err != nil {
+		writeS3Error(w, "InvalidRequest", "Unable to parse copy source.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.SplitN(decoded, "/", 2)
+	if len(parts) != 2 {
+		writeS3Error(w, "InvalidRequest", "Invalid copy source.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+	srcBucket, srcKey := parts[0], parts[1]
+
+	// Look up source object metadata.
+	var (
+		hashHex     string
+		size        int64
+		contentType sql.NullString
+	)
+
+	err = s.db.QueryRow(
+		`SELECT hash, size, content_type FROM objects WHERE bucket = ? AND key = ?`,
+		srcBucket, srcKey,
+	).Scan(&hashHex, &size, &contentType)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("Lookup source object for copy", "srcBucket", srcBucket, "srcKey", srcKey, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	// Ensure destination bucket exists; for convenience, auto-create if missing.
+	if _, err := s.ensureBucket(destBucket); err != nil {
+		slog.Error("Ensure dest bucket for copy", "bucket", destBucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	// If copying across buckets, ask the storage engine to ensure the payload
+	// exists in the destination bucket, avoiding unnecessary reads/writes.
+	if srcBucket != destBucket {
+		if err := s.cfg.Engine.CopyObject(srcBucket, hashHex, destBucket); err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "object payload missing", http.StatusInternalServerError)
+				return
+			}
+			slog.Error("Copy payload between buckets", "srcBucket", srcBucket, "destBucket", destBucket, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	parent := parentPrefixForKey(destKey)
+	createdAt := time.Now().UTC()
+
+	var ct any
+	if contentType.Valid {
+		ct = contentType.String
+	} else {
+		ct = nil
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(bucket, key) DO UPDATE SET
+		 	parent=excluded.parent,
+		 	hash=excluded.hash,
+		 	size=excluded.size,
+		 	content_type=excluded.content_type,
+		 	created_at=excluded.created_at`,
+		destBucket, destKey, parent, hashHex, size, ct, createdAt,
+	)
+	if err != nil {
+		slog.Error("Upsert dest object metadata for copy", "destBucket", destBucket, "destKey", destKey, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	resp := CopyObjectResult{
+		XMLNS:        s3XMLNamespace,
+		LastModified: createdAt.UTC().Format(time.RFC3339),
+		ETag:         createETag(hashHex),
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode copy object XML", "destBucket", destBucket, "destKey", destKey, "err", err)
 	}
 }
 

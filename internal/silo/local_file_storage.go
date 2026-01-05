@@ -66,6 +66,47 @@ func (s *LocalFileStorage) PutObject(bucket string, hashHex string, data []byte)
 	return os.WriteFile(objPath, data, 0o644)
 }
 
+// CopyObject ensures that the payload identified by hashHex is present in the
+// destination bucket. When possible, it creates a hard link from an existing
+// copy of the payload instead of reading and rewriting the data.
+func (s *LocalFileStorage) CopyObject(srcBucket, hashHex, destBucket string) error {
+	srcPath, err := s.objectPath(srcBucket, hashHex)
+	if err != nil {
+		return err
+	}
+
+	destPath, err := s.objectPath(destBucket, hashHex)
+	if err != nil {
+		return err
+	}
+
+	// If source and destination paths are identical, nothing to do.
+	if srcPath == destPath {
+		return nil
+	}
+
+	// Ensure the source exists before attempting to link.
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("source is not a regular file: %s", srcPath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+
+	// Attempt to create a hard link from src to dest. If a file already exists
+	// at destPath, leave it as-is.
+	if _, err := os.Stat(destPath); err == nil {
+		return nil
+	}
+
+	return os.Link(srcPath, destPath)
+}
+
 func (s *LocalFileStorage) GetObject(bucket string, hashHex string) ([]byte, error) {
 	objPath, err := s.objectPath(bucket, hashHex)
 	if err != nil {
