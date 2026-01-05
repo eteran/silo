@@ -11,6 +11,8 @@ import (
 )
 
 func TestLocalFileStoragePutAndGet(t *testing.T) {
+	t.Parallel()
+
 	dataDir := t.TempDir()
 	engine := NewLocalFileStorage(dataDir)
 
@@ -35,6 +37,8 @@ func TestLocalFileStoragePutAndGet(t *testing.T) {
 }
 
 func TestLocalFileStorageInvalidHash(t *testing.T) {
+	t.Parallel()
+
 	dataDir := t.TempDir()
 	engine := NewLocalFileStorage(dataDir)
 
@@ -47,6 +51,8 @@ func TestLocalFileStorageInvalidHash(t *testing.T) {
 }
 
 func TestLocalFileStorageDeleteIsNoop(t *testing.T) {
+	t.Parallel()
+
 	dataDir := t.TempDir()
 	engine := NewLocalFileStorage(dataDir)
 

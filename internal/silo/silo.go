@@ -32,9 +32,8 @@ type Config struct {
 // Server provides a minimal S3-compatible HTTP API backed by the local
 // filesystem for object storage and SQLite for metadata.
 type Server struct {
-	cfg    Config
-	db     *sql.DB
-	engine StorageEngine
+	cfg Config
+	db  *sql.DB
 }
 
 // NewServer initializes the metadata database and returns a new Server.
@@ -64,12 +63,11 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	engine := cfg.Engine
-	if engine == nil {
-		engine = NewLocalFileStorage(cfg.DataDir)
+	if cfg.Engine == nil {
+		cfg.Engine = NewLocalFileStorage(cfg.DataDir)
 	}
 
-	return &Server{cfg: cfg, db: db, engine: engine}, nil
+	return &Server{cfg: cfg, db: db}, nil
 }
 
 func (s *Server) Close() error {
@@ -347,7 +345,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	sum := sha256.Sum256(data)
 	hashHex := hex.EncodeToString(sum[:])
-	if err := s.engine.PutObject(hashHex, data); err != nil {
+	if err := s.cfg.Engine.PutObject(hashHex, data); err != nil {
 		slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -423,7 +421,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 
-	data, err := s.engine.GetObject(hashHex)
+	data, err := s.cfg.Engine.GetObject(hashHex)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "object payload missing", http.StatusInternalServerError)
