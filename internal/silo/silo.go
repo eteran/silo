@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -335,8 +336,10 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	}
 
 	var (
-		data []byte
-		err  error
+		data    []byte
+		length  int64
+		hashHex string
+		err     error
 	)
 
 	contentSHA := r.Header.Get("X-Amz-Content-Sha256")
@@ -355,12 +358,44 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 			return
 		}
 
-		data, err = readStreamingV4Payload(r.Body, decodedLen)
+		tmpDir := filepath.Join(s.cfg.DataDir, "tmp")
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			slog.Error("Error creating temp dir for streaming upload", "path", tmpDir, "err", err)
+			writeS3Error(w, "InternalError", "Error creating temp dir for streaming upload", r.URL.Path, http.StatusInternalServerError)
+		}
+
+		tempPath, err := os.CreateTemp(tmpDir, "upload-*")
+		if err != nil {
+			slog.Error("Error creating temp dir for streaming upload", "path", tmpDir, "err", err)
+			writeS3Error(w, "InternalError", "Error creating temp dir for streaming upload", r.URL.Path, http.StatusInternalServerError)
+		}
+		defer func() {
+			if err := tempPath.Close(); err != nil {
+				slog.Debug("Failed to close temp upload file", "path", tempPath.Name(), "err", err)
+			}
+
+			// Best-effort cleanup of the temporary file; if the storage engine
+			// moved it into place via rename, this will just fail with ENOENT.
+			if err := os.Remove(tempPath.Name()); err != nil && !os.IsNotExist(err) {
+				slog.Debug("Failed to remove temp upload file", "path", tempPath, "err", err)
+			}
+		}()
+
+		size, hash, err := s.decodeStreamingPayloadToTemp(tempPath, r.Body, decodedLen)
 		if err != nil {
 			slog.Error("Decode streaming payload", "err", err)
 			writeS3Error(w, "InvalidRequest", "Failed to decode streaming payload", r.URL.Path, http.StatusBadRequest)
 			return
 		}
+
+		if err := s.cfg.Engine.PutObjectFromFile(bucket, hash, tempPath.Name(), size); err != nil {
+			slog.Error("Store object payload from file", "bucket", bucket, "key", key, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+
+		length = size
+		hashHex = hash
 	} else {
 		data, err = io.ReadAll(r.Body)
 		if err != nil {
@@ -368,16 +403,17 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 			writeS3Error(w, "InvalidRequest", "Failed to read request body", r.URL.Path, http.StatusBadRequest)
 			return
 		}
+		length = int64(len(data))
+
+		sum := sha256.Sum256(data)
+		hashHex = hex.EncodeToString(sum[:])
+		if err := s.cfg.Engine.PutObject(bucket, hashHex, data); err != nil {
+			slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return
+		}
 	}
 	defer r.Body.Close()
-
-	sum := sha256.Sum256(data)
-	hashHex := hex.EncodeToString(sum[:])
-	if err := s.cfg.Engine.PutObject(bucket, hashHex, data); err != nil {
-		slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
 
 	contentType := r.Header.Get("Content-Type")
 	if contentType == "" {
@@ -395,7 +431,7 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 		 	size=excluded.size,
 		 	content_type=excluded.content_type,
 		 	created_at=excluded.created_at`,
-		bucket, key, parent, hashHex, len(data), contentType, time.Now().UTC(),
+		bucket, key, parent, hashHex, length, contentType, time.Now().UTC(),
 	)
 	if err != nil {
 		slog.Error("Upsert object metadata", "bucket", bucket, "key", key, "err", err)
@@ -407,21 +443,24 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	w.WriteHeader(http.StatusOK)
 }
 
-// readStreamingV4Payload decodes an AWS Signature Version 4 streaming
-// (chunked) payload into a contiguous byte slice. The decodedLen parameter
-// should be taken from the X-Amz-Decoded-Content-Length header.
-func readStreamingV4Payload(body io.Reader, decodedLen int64) ([]byte, error) {
+// decodeStreamingPayloadToTemp decodes an AWS Signature Version 4 streaming
+// (chunked) payload into a temporary file under the server's data directory
+// while computing the SHA-256 hash of the decoded payload. It returns the
+// temp file path, the decoded payload length, and the payload hash.
+func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decodedLen int64) (int64, string, error) {
 	br := bufio.NewReader(body)
-	buf := make([]byte, 0, decodedLen)
+
+	h := sha256.New()
+	var written int64
 
 	for {
 		// Each chunk begins with: <size-hex>[;extensions]\r\n
 		line, err := br.ReadString('\n')
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, fmt.Errorf("unexpected EOF while reading chunk header")
+				return 0, "", fmt.Errorf("unexpected EOF while reading chunk header")
 			}
-			return nil, fmt.Errorf("read chunk header: %w", err)
+			return 0, "", fmt.Errorf("read chunk header: %w", err)
 		}
 
 		line = strings.TrimRight(line, "\r\n")
@@ -438,7 +477,7 @@ func readStreamingV4Payload(body io.Reader, decodedLen int64) ([]byte, error) {
 		sizeHex := strings.TrimSpace(line)
 		size, err := strconv.ParseInt(sizeHex, 16, 64)
 		if err != nil {
-			return nil, fmt.Errorf("parse chunk size %q: %w", sizeHex, err)
+			return 0, "", fmt.Errorf("parse chunk size %q: %w", sizeHex, err)
 		}
 
 		if size == 0 {
@@ -449,24 +488,36 @@ func readStreamingV4Payload(body io.Reader, decodedLen int64) ([]byte, error) {
 			break
 		}
 
-		chunk := make([]byte, size)
-		if _, err := io.ReadFull(br, chunk); err != nil {
-			return nil, fmt.Errorf("read chunk body: %w", err)
+		remaining := size
+		buf := make([]byte, 32*1024)
+		for remaining > 0 {
+			toRead := min(remaining, int64(len(buf)))
+			n, err := io.ReadFull(br, buf[:toRead])
+			if err != nil {
+				return 0, "", fmt.Errorf("read chunk body: %w", err)
+			}
+			if _, err := f.Write(buf[:n]); err != nil {
+				return 0, "", fmt.Errorf("write chunk to temp file: %w", err)
+			}
+			if _, err := h.Write(buf[:n]); err != nil {
+				return 0, "", fmt.Errorf("hash chunk: %w", err)
+			}
+			written += int64(n)
+			remaining -= int64(n)
 		}
-		buf = append(buf, chunk...)
 
 		// Consume the trailing CRLF after the chunk body.
 		if b, err := br.ReadByte(); err != nil || b != '\r' {
 			if err == nil {
-				return nil, fmt.Errorf("expected CR after chunk, got %q", b)
+				return 0, "", fmt.Errorf("expected CR after chunk, got %q", b)
 			}
-			return nil, fmt.Errorf("read CR after chunk: %w", err)
+			return 0, "", fmt.Errorf("read CR after chunk: %w", err)
 		}
 		if b, err := br.ReadByte(); err != nil || b != '\n' {
 			if err == nil {
-				return nil, fmt.Errorf("expected LF after chunk, got %q", b)
+				return 0, "", fmt.Errorf("expected LF after chunk, got %q", b)
 			}
-			return nil, fmt.Errorf("read LF after chunk: %w", err)
+			return 0, "", fmt.Errorf("read LF after chunk: %w", err)
 		}
 	}
 
@@ -474,11 +525,12 @@ func readStreamingV4Payload(body io.Reader, decodedLen int64) ([]byte, error) {
 	// fail hard if it does not match exactly – some clients may omit or
 	// mis-report it. The storage layer relies on the actual length we
 	// decoded.
-	if decodedLen >= 0 && int64(len(buf)) != decodedLen {
-		slog.Debug("Decoded streaming payload length mismatch", "expected", decodedLen, "actual", len(buf))
+	if decodedLen >= 0 && written != decodedLen {
+		slog.Debug("Decoded streaming payload length mismatch", "expected", decodedLen, "actual", written)
 	}
 
-	return buf, nil
+	hashHex := hex.EncodeToString(h.Sum(nil))
+	return written, hashHex, nil
 }
 
 // handleGetObject implements GET /bucket/key to retrieve an object.

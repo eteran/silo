@@ -66,6 +66,51 @@ func (s *LocalFileStorage) PutObject(bucket string, hashHex string, data []byte)
 	return os.WriteFile(objPath, data, 0o644)
 }
 
+// PutObjectFromFile stores an object whose payload already exists on disk at
+// tempPath. It uses the same content-addressed layout and cross-bucket
+// deduplication strategy as PutObject, but avoids loading the entire payload
+// into memory.
+func (s *LocalFileStorage) PutObjectFromFile(bucket string, hashHex string, tempPath string, size int64) error {
+	objPath, err := s.objectPath(bucket, hashHex)
+	if err != nil {
+		return err
+	}
+
+	// If an object with the same hash and size already exists in any bucket,
+	// create a hard link instead of moving or copying the temp file.
+	subdir := hashHex[:2]
+	pattern := filepath.Join(s.dataDir, "*", subdir, hashHex)
+	matches, _ := filepath.Glob(pattern)
+	for _, existing := range matches {
+		if existing == objPath {
+			continue
+		}
+		info, err := os.Stat(existing)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Size() != size {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.Link(existing, objPath); err == nil {
+			return nil
+		}
+	}
+
+	// No existing compatible payload; move/copy the temp file into place.
+	if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, objPath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // CopyObject ensures that the payload identified by hashHex is present in the
 // destination bucket. When possible, it creates a hard link from an existing
 // copy of the payload instead of reading and rewriting the data.
