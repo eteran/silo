@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,13 +26,15 @@ var bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
 type Config struct {
 	DataDir string
 	Region  string
+	Engine  StorageEngine
 }
 
 // Server provides a minimal S3-compatible HTTP API backed by the local
 // filesystem for object storage and SQLite for metadata.
 type Server struct {
-	cfg Config
-	db  *sql.DB
+	cfg    Config
+	db     *sql.DB
+	engine StorageEngine
 }
 
 // NewServer initializes the metadata database and returns a new Server.
@@ -63,7 +64,12 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	return &Server{cfg: cfg, db: db}, nil
+	engine := cfg.Engine
+	if engine == nil {
+		engine = NewLocalFileStorage(cfg.DataDir)
+	}
+
+	return &Server{cfg: cfg, db: db, engine: engine}, nil
 }
 
 func (s *Server) Close() error {
@@ -341,17 +347,8 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	sum := sha256.Sum256(data)
 	hashHex := hex.EncodeToString(sum[:])
-	subdir := hashHex[:2]
-	storeDir := filepath.Join(s.cfg.DataDir, subdir)
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		slog.Error("Create object directory", "dir", storeDir, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	objPath := filepath.Join(storeDir, hashHex)
-	if err := os.WriteFile(objPath, data, 0o644); err != nil {
-		slog.Error("Write object file", "path", objPath, "err", err)
+	if err := s.engine.PutObject(hashHex, data); err != nil {
+		slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -426,19 +423,16 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		return
 	}
 
-	subdir := hashHex[:2]
-	objPath := filepath.Join(s.cfg.DataDir, subdir, hashHex)
-	f, err := os.Open(objPath)
+	data, err := s.engine.GetObject(hashHex)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "object payload missing", http.StatusInternalServerError)
 			return
 		}
-		slog.Error("Open object file", "path", objPath, "err", err)
+		slog.Error("Read object payload", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
 
 	if contentType.Valid {
 		w.Header().Set("Content-Type", contentType.String)
@@ -453,7 +447,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, f); err != nil {
+	if _, err := w.Write(data); err != nil {
 		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
 	}
 }
