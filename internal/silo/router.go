@@ -120,10 +120,9 @@ func (s *Server) Handler() http.Handler {
 		bucket := r.PathValue("bucket")
 		s.handleBucketGet(w, r, bucket)
 	})
-
 	mux.HandleFunc("HEAD /{bucket}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
-		s.handleHeadBucket(w, r, bucket)
+		s.handleBucketHead(w, r, bucket)
 	})
 	mux.HandleFunc("DELETE /{bucket}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
@@ -138,22 +137,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
-		s.handlePutObject(w, r, bucket, key)
+		s.handleObjectPut(w, r, bucket, key)
 	})
 	mux.HandleFunc("GET /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
-		s.handleGetObject(w, r, bucket, key)
+		s.handleObjectGet(w, r, bucket, key)
 	})
 	mux.HandleFunc("HEAD /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
-		s.handleHeadObject(w, r, bucket, key)
+		s.handleObjectHead(w, r, bucket, key)
 	})
 	mux.HandleFunc("DELETE /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
-		s.handleDeleteObject(w, r, bucket, key)
+		s.handleObjectDelete(w, r, bucket, key)
 	})
 	mux.HandleFunc("POST /{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")

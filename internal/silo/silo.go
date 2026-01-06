@@ -45,6 +45,25 @@ type Server struct {
 	db  *sql.DB
 }
 
+// initSchema initializes the metadata database schema by applying all
+// SQL files in the embedded migrations in lexicographical order.
+func initSchema(db *sql.DB) error {
+	return fs.WalkDir(migrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			return nil
+		}
+
+		content, err := migrationsFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("error reading SQL file: %w", err)
+		}
+
+		slog.Info("Running migration", "path", path)
+		_, err = db.Exec(string(content))
+		return err
+	})
+}
+
 // NewServer initializes the metadata database and returns a new Server.
 func NewServer(cfg Config) (*Server, error) {
 
@@ -84,40 +103,229 @@ func (s *Server) Close() error {
 	return s.db.Close()
 }
 
-// initSchema initializes the metadata database schema by applying all
-// SQL files in the embedded migrations in lexicographical order.
-func initSchema(db *sql.DB) error {
-	return fs.WalkDir(migrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
-		if d.IsDir() {
-			return nil
-		}
-
-		content, err := migrationsFS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("error reading SQL file: %w", err)
-		}
-
-		slog.Info("Running migration", "path", path)
-		_, err = db.Exec(string(content))
-		return err
-	})
-}
-
+// bucketExists checks whether a bucket with the given name exists.
 func (s *Server) bucketExists(bucket string) (bool, error) {
-	// Ensure bucket exists.
-	var bucketName string
-	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-
-	if err != nil {
-		slog.Error("Get bucket location", "bucket", bucket, "err", err)
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM buckets WHERE name = ?`, bucket).Scan(&count); err != nil {
 		return false, err
 	}
 
-	return true, nil
+	return count > 0, nil
 }
+
+// ensureBucket makes sure the given bucket exists, creating it if necessary.
+func (s *Server) ensureBucket(name string) (sql.Result, error) {
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO buckets(name, created_at) VALUES(?, ?)`,
+		name, time.Now().UTC(),
+	)
+	return res, err
+}
+
+// writeNotImplemented is a helper for stubbing unsupported S3 operations.
+func (s *Server) writeNotImplemented(w http.ResponseWriter, r *http.Request, op string) {
+	message := fmt.Sprintf("%s is not implemented.", op)
+	writeS3Error(w, "NotImplemented", message, r.URL.Path, http.StatusNotImplemented)
+}
+
+// writeS3Error writes a minimal S3-style XML error response.
+func writeS3Error(w http.ResponseWriter, code string, message string, resource string, status int) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	_ = xml.NewEncoder(w).Encode(S3Error{
+		Code:     code,
+		Message:  message,
+		Resource: resource,
+	})
+}
+
+// parentPrefixForKey returns the immediate parent prefix for a given S3
+// object key. For example:
+//
+//	"a/b/c.txt" -> "a/b/"
+//	"file.txt"  -> ""
+//	"dir/"      -> "" (treated as a top-level key whose name ends with '/')
+func parentPrefixForKey(key string) string {
+	trimmed := strings.TrimRight(key, "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx == -1 {
+		return ""
+	}
+	// Include the trailing slash from the original key up to and including idx.
+	return key[:idx+1]
+}
+
+// isValidBucketName implements the standard S3 bucket naming rules for
+// "virtual hosted-style" buckets.
+func isValidBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 63 {
+		return false
+	}
+
+	// Must consist only of lowercase letters, digits, dots, or hyphens,
+	// and must start and end with a letter or digit.
+	if !bucketNamePattern.MatchString(name) {
+		return false
+	}
+
+	// Disallow patterns like "..", ".-", "-.".
+	if strings.Contains(name, "..") {
+		return false
+	}
+
+	for i := 1; i < len(name); i++ {
+		if (name[i-1] == '.' && name[i] == '-') || (name[i-1] == '-' && name[i] == '.') {
+			return false
+		}
+	}
+
+	// Bucket name must not be formatted as an IPv4 address.
+	ip := net.ParseIP(name)
+	if ip != nil {
+		return false
+	}
+
+	return true
+}
+
+// isValidObjectKey enforces basic S3 object key constraints: non-empty,
+// at most 1024 bytes, and no control characters.
+func isValidObjectKey(key string) bool {
+	if len(key) == 0 || len(key) > 1024 {
+		return false
+	}
+
+	return !strings.ContainsFunc(key, func(c rune) bool {
+		return c < 0x20 || c == 0x7f
+	})
+}
+
+// validateBucketNameOrError writes an S3 InvalidBucketName error and returns
+// false if the provided name does not meet S3 bucket naming rules.
+func validateBucketNameOrError(w http.ResponseWriter, r *http.Request, bucket string) bool {
+	if !isValidBucketName(bucket) {
+		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", r.URL.Path, http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// validateObjectKeyOrError writes an S3-style error for invalid object keys.
+func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string) bool {
+	if !isValidObjectKey(key) {
+		writeS3Error(w, "InvalidObjectName", "The specified key is not valid.", r.URL.Path, http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// writeXMLResponse encodes v as XML and writes it to w with a 200 OK status.
+func writeXMLResponse(w http.ResponseWriter, v any) error {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	if err := xml.NewEncoder(w).Encode(v); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// createETag formats a hash hex string as an ETag value.
+func createETag(hashHex string) string {
+	return fmt.Sprintf("\"%s\"", hashHex)
+}
+
+// decodeStreamingPayloadToTemp decodes an AWS Signature Version 4 streaming
+// (chunked) payload into a temporary file under the server's data directory
+// while computing the SHA-256 hash of the decoded payload. It returns the
+// temp file path, the decoded payload length, and the payload hash.
+func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decodedLen int64) (int64, string, error) {
+	br := bufio.NewReader(body)
+
+	h := sha256.New()
+	var written int64
+
+	for {
+		// Each chunk begins with: <size-hex>[;extensions]\r\n
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return 0, "", fmt.Errorf("unexpected EOF while reading chunk header")
+			}
+			return 0, "", fmt.Errorf("read chunk header: %w", err)
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			// Skip empty lines if any.
+			continue
+		}
+
+		// Strip any chunk extensions (e.g. ";chunk-signature=...").
+		if idx := strings.IndexByte(line, ';'); idx != -1 {
+			line = line[:idx]
+		}
+
+		sizeHex := strings.TrimSpace(line)
+		size, err := strconv.ParseInt(sizeHex, 16, 64)
+		if err != nil {
+			return 0, "", fmt.Errorf("parse chunk size %q: %w", sizeHex, err)
+		}
+
+		if size == 0 {
+			// Final chunk. Per AWS streaming format, this is followed by a
+			// trailing CRLF and optional trailers. For our purposes we can
+			// consume a single empty line and stop.
+			_, _ = br.ReadString('\n') // best-effort consume trailer terminator
+			break
+		}
+
+		remaining := size
+		buf := make([]byte, 32*1024)
+		for remaining > 0 {
+			toRead := min(remaining, int64(len(buf)))
+			n, err := io.ReadFull(br, buf[:toRead])
+			if err != nil {
+				return 0, "", fmt.Errorf("read chunk body: %w", err)
+			}
+			if _, err := f.Write(buf[:n]); err != nil {
+				return 0, "", fmt.Errorf("write chunk to temp file: %w", err)
+			}
+			if _, err := h.Write(buf[:n]); err != nil {
+				return 0, "", fmt.Errorf("hash chunk: %w", err)
+			}
+			written += int64(n)
+			remaining -= int64(n)
+		}
+
+		// Consume the trailing CRLF after the chunk body.
+		if b, err := br.ReadByte(); err != nil || b != '\r' {
+			if err == nil {
+				return 0, "", fmt.Errorf("expected CR after chunk, got %q", b)
+			}
+			return 0, "", fmt.Errorf("read CR after chunk: %w", err)
+		}
+		if b, err := br.ReadByte(); err != nil || b != '\n' {
+			if err == nil {
+				return 0, "", fmt.Errorf("expected LF after chunk, got %q", b)
+			}
+			return 0, "", fmt.Errorf("read LF after chunk: %w", err)
+		}
+	}
+
+	// If decodedLen was provided, use it as a sanity check but do not
+	// fail hard if it does not match exactly – some clients may omit or
+	// mis-report it. The storage layer relies on the actual length we
+	// decoded.
+	if decodedLen >= 0 && written != decodedLen {
+		slog.Debug("Decoded streaming payload length mismatch", "expected", decodedLen, "actual", written)
+	}
+
+	hashHex := hex.EncodeToString(h.Sum(nil))
+	return written, hashHex, nil
+}
+
+// ------ Dispatchers for bucket-level HTTP handlers ------
 
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
 // and various bucket configuration APIs.
@@ -149,36 +357,19 @@ func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 }
 
-// ensureBucket makes sure the given bucket exists, creating it if necessary.
-func (s *Server) ensureBucket(name string) (sql.Result, error) {
-	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO buckets(name, created_at) VALUES(?, ?)`,
-		name, time.Now().UTC(),
-	)
-	return res, err
-}
-
-// handleCreateBucket implements PUT /bucket to create a new bucket.
-func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+// handleBucketPost implements POST /bucket[?subresource], such as DeleteObjects.
+func (s *Server) handleBucketPost(w http.ResponseWriter, r *http.Request, bucket string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
-	res, err := s.ensureBucket(bucket)
-	if err != nil {
-		slog.Error("Create bucket", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
+	q := r.URL.Query()
+	switch {
+	case q.Has("delete"):
+		s.writeNotImplemented(w, r, "DeleteObjects")
+	default:
+		s.writeNotImplemented(w, r, "BucketPost")
 	}
-
-	rows, err := res.RowsAffected()
-	if err == nil && rows == 0 {
-		// Bucket already existed; S3 returns 409 BucketAlreadyOwnedByYou.
-		writeS3Error(w, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.", r.URL.Path, http.StatusConflict)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 // handleBucketGet dispatches GET /bucket[?subresource] between ListObjects
@@ -219,12 +410,41 @@ func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket 
 	}
 }
 
-// handleGetBucketLocation implements GET /bucket?location
-func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request, bucket string) {
+// handleBucketDelete implements DELETE /bucket[?subresource].
+func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(w, r, bucket) {
+		return
+	}
+
+	q := r.URL.Query()
+	switch {
+	case q.Has("tagging"):
+		s.writeNotImplemented(w, r, "DeleteBucketTagging")
+	case q.Has("encryption"):
+		s.writeNotImplemented(w, r, "DeleteBucketEncryption")
+	case q.Has("cors"):
+		s.writeNotImplemented(w, r, "DeleteBucketCors")
+	case q.Has("lifecycle"):
+		s.writeNotImplemented(w, r, "DeleteBucketLifecycle")
+	case q.Has("policy"):
+		s.writeNotImplemented(w, r, "DeleteBucketPolicy")
+	case q.Has("replication"):
+		s.writeNotImplemented(w, r, "DeleteBucketReplication")
+	default:
+		// Primary bucket deletion (no subresources).
+		s.handleDeleteBucket(w, r, bucket)
+	}
+}
+
+// handleBucketHead implements HEAD /bucket.
+func (s *Server) handleBucketHead(w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(w, r, bucket) {
+		return
+	}
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(bucket); err != nil {
-		slog.Error("Get bucket location", "bucket", bucket, "err", err)
+		slog.Error("Bucket head", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	} else if !exists {
@@ -232,64 +452,142 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	resp := LocationConstraint{
-		XMLNS:  s3XMLNamespace,
-		Region: s.cfg.Region,
-	}
-
-	if err := writeXMLResponse(w, resp); err != nil {
-		slog.Error("Encode bucket location XML", "bucket", bucket, "err", err)
-	}
+	// S3-compatible HEAD bucket: 200 with no body.
+	w.WriteHeader(http.StatusOK)
 }
 
-// handleListBuckets implements GET / to list all buckets.
-func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(`SELECT name, created_at FROM buckets ORDER BY name`)
-	if err != nil {
-		slog.Error("List buckets", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+// ------ Dispatchers for object-level HTTP handlers ------
+
+// handleObjectPost implements POST /bucket/key[?subresource] operations such
+// as CompleteMultipartUpload, RestoreObject, and SelectObjectContent.
+func (s *Server) handleObjectPost(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
-	defer rows.Close()
-
-	var buckets []struct {
-		Name      string
-		CreatedAt time.Time
-	}
-	for rows.Next() {
-		var b struct {
-			Name      string
-			CreatedAt time.Time
-		}
-		if err := rows.Scan(&b.Name, &b.CreatedAt); err != nil {
-			slog.Error("Scan bucket", "err", err)
-			continue
-		}
-		buckets = append(buckets, b)
+	if !validateObjectKeyOrError(w, r, key) {
+		return
 	}
 
-	resp := ListAllMyBucketsResult{
-		XMLNS: s3XMLNamespace,
-	}
-	resp.Owner.ID = "silo"
-	resp.Owner.DisplayName = "silo"
-	for _, b := range buckets {
-		resp.Buckets = append(resp.Buckets, struct {
-			Name         string `xml:"Name"`
-			CreationDate string `xml:"CreationDate"`
-		}{
-			Name:         b.Name,
-			CreationDate: b.CreatedAt.UTC().Format(time.RFC3339),
-		})
-	}
-
-	if err := writeXMLResponse(w, resp); err != nil {
-		slog.Error("Encode list buckets XML", "err", err)
+	q := r.URL.Query()
+	switch {
+	case q.Has("uploadId"):
+		s.writeNotImplemented(w, r, "CompleteMultipartUpload")
+	case q.Has("restore"):
+		s.writeNotImplemented(w, r, "RestoreObject")
+	case q.Has("select"):
+		s.writeNotImplemented(w, r, "SelectObjectContent")
+	default:
+		s.writeNotImplemented(w, r, "ObjectPost")
 	}
 }
 
-// handlePutObject implements PUT /bucket/key to store an object.
-func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
+// handleObjectGet implements GET /bucket/key to retrieve an object.
+func (s *Server) handleObjectGet(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(w, r, bucket) {
+		return
+	}
+	if !validateObjectKeyOrError(w, r, key) {
+		return
+	}
+
+	q := r.URL.Query()
+	switch {
+	case q.Has("tagging"):
+		s.writeNotImplemented(w, r, "GetObjectTagging")
+		return
+	case q.Has("attributes"):
+		s.writeNotImplemented(w, r, "GetObjectAttributes")
+		return
+	case q.Has("uploadId"):
+		s.writeNotImplemented(w, r, "ListParts")
+		return
+	}
+
+	var (
+		hashHex     string
+		size        int64
+		contentType sql.NullString
+		createdAt   time.Time
+	)
+
+	err := s.db.QueryRow(
+		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
+		bucket, key,
+	).Scan(&hashHex, &size, &contentType, &createdAt)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	if err != nil {
+		slog.Error("Lookup object metadata", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	data, err := s.cfg.Engine.GetObject(bucket, hashHex)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "object payload missing", http.StatusInternalServerError)
+			return
+		}
+		slog.Error("Read object payload", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	if contentType.Valid {
+		w.Header().Set("Content-Type", contentType.String)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if size >= 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+	}
+	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("ETag", createETag(hashHex))
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(data); err != nil {
+		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
+	}
+}
+
+// handleObjectDelete implements DELETE /bucket/key to delete an object.
+func (s *Server) handleObjectDelete(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(w, r, bucket) {
+		return
+	}
+	if !validateObjectKeyOrError(w, r, key) {
+		return
+	}
+
+	q := r.URL.Query()
+	switch {
+	case q.Has("tagging"):
+		s.writeNotImplemented(w, r, "DeleteObjectTagging")
+		return
+	case q.Has("uploadId"):
+		s.writeNotImplemented(w, r, "AbortMultipartUpload")
+		return
+	}
+
+	_, err := s.db.Exec(`DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
+	if err != nil {
+		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	// Note: we intentionally do not garbage-collect unreferenced payload
+	// files yet. That can be added later based on hash reference counts.
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleObjectPut implements PUT /bucket/key to store an object.
+func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
@@ -440,115 +738,13 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	w.WriteHeader(http.StatusOK)
 }
 
-// decodeStreamingPayloadToTemp decodes an AWS Signature Version 4 streaming
-// (chunked) payload into a temporary file under the server's data directory
-// while computing the SHA-256 hash of the decoded payload. It returns the
-// temp file path, the decoded payload length, and the payload hash.
-func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decodedLen int64) (int64, string, error) {
-	br := bufio.NewReader(body)
-
-	h := sha256.New()
-	var written int64
-
-	for {
-		// Each chunk begins with: <size-hex>[;extensions]\r\n
-		line, err := br.ReadString('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return 0, "", fmt.Errorf("unexpected EOF while reading chunk header")
-			}
-			return 0, "", fmt.Errorf("read chunk header: %w", err)
-		}
-
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			// Skip empty lines if any.
-			continue
-		}
-
-		// Strip any chunk extensions (e.g. ";chunk-signature=...").
-		if idx := strings.IndexByte(line, ';'); idx != -1 {
-			line = line[:idx]
-		}
-
-		sizeHex := strings.TrimSpace(line)
-		size, err := strconv.ParseInt(sizeHex, 16, 64)
-		if err != nil {
-			return 0, "", fmt.Errorf("parse chunk size %q: %w", sizeHex, err)
-		}
-
-		if size == 0 {
-			// Final chunk. Per AWS streaming format, this is followed by a
-			// trailing CRLF and optional trailers. For our purposes we can
-			// consume a single empty line and stop.
-			_, _ = br.ReadString('\n') // best-effort consume trailer terminator
-			break
-		}
-
-		remaining := size
-		buf := make([]byte, 32*1024)
-		for remaining > 0 {
-			toRead := min(remaining, int64(len(buf)))
-			n, err := io.ReadFull(br, buf[:toRead])
-			if err != nil {
-				return 0, "", fmt.Errorf("read chunk body: %w", err)
-			}
-			if _, err := f.Write(buf[:n]); err != nil {
-				return 0, "", fmt.Errorf("write chunk to temp file: %w", err)
-			}
-			if _, err := h.Write(buf[:n]); err != nil {
-				return 0, "", fmt.Errorf("hash chunk: %w", err)
-			}
-			written += int64(n)
-			remaining -= int64(n)
-		}
-
-		// Consume the trailing CRLF after the chunk body.
-		if b, err := br.ReadByte(); err != nil || b != '\r' {
-			if err == nil {
-				return 0, "", fmt.Errorf("expected CR after chunk, got %q", b)
-			}
-			return 0, "", fmt.Errorf("read CR after chunk: %w", err)
-		}
-		if b, err := br.ReadByte(); err != nil || b != '\n' {
-			if err == nil {
-				return 0, "", fmt.Errorf("expected LF after chunk, got %q", b)
-			}
-			return 0, "", fmt.Errorf("read LF after chunk: %w", err)
-		}
-	}
-
-	// If decodedLen was provided, use it as a sanity check but do not
-	// fail hard if it does not match exactly – some clients may omit or
-	// mis-report it. The storage layer relies on the actual length we
-	// decoded.
-	if decodedLen >= 0 && written != decodedLen {
-		slog.Debug("Decoded streaming payload length mismatch", "expected", decodedLen, "actual", written)
-	}
-
-	hashHex := hex.EncodeToString(h.Sum(nil))
-	return written, hashHex, nil
-}
-
-// handleGetObject implements GET /bucket/key to retrieve an object.
-func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
+// handleObjectHead implements HEAD /bucket/key, returning metadata headers
+// compatible with S3 but without a response body.
+func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 	if !validateObjectKeyOrError(w, r, key) {
-		return
-	}
-
-	q := r.URL.Query()
-	switch {
-	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "GetObjectTagging")
-		return
-	case q.Has("attributes"):
-		s.writeNotImplemented(w, r, "GetObjectAttributes")
-		return
-	case q.Has("uploadId"):
-		s.writeNotImplemented(w, r, "ListParts")
 		return
 	}
 
@@ -563,25 +759,12 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
 		bucket, key,
 	).Scan(&hashHex, &size, &contentType, &createdAt)
-
 	if errors.Is(err, sql.ErrNoRows) {
 		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
-
 	if err != nil {
-		slog.Error("Lookup object metadata", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	data, err := s.cfg.Engine.GetObject(bucket, hashHex)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "object payload missing", http.StatusInternalServerError)
-			return
-		}
-		slog.Error("Read object payload", "bucket", bucket, "key", key, "err", err)
+		slog.Error("Lookup object metadata (HEAD)", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
@@ -592,15 +775,103 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	if size >= 0 {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
 	w.Header().Set("ETag", createETag(hashHex))
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(data); err != nil {
-		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
+}
+
+// ------ Individual API HTTP handlers ------
+
+// handleCreateBucket implements PUT /bucket to create a new bucket.
+func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+
+	res, err := s.ensureBucket(bucket)
+	if err != nil {
+		slog.Error("Create bucket", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		// Bucket already existed; S3 returns 409 BucketAlreadyOwnedByYou.
+		writeS3Error(w, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.", r.URL.Path, http.StatusConflict)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGetBucketLocation implements GET /bucket?location
+func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request, bucket string) {
+
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
+		slog.Error("Get bucket location", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	resp := LocationConstraint{
+		XMLNS:  s3XMLNamespace,
+		Region: s.cfg.Region,
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode bucket location XML", "bucket", bucket, "err", err)
+	}
+}
+
+// handleListBuckets implements GET / to list all buckets.
+func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(`SELECT name, created_at FROM buckets ORDER BY name`)
+	if err != nil {
+		slog.Error("List buckets", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var buckets []struct {
+		Name      string
+		CreatedAt time.Time
+	}
+	for rows.Next() {
+		var b struct {
+			Name      string
+			CreatedAt time.Time
+		}
+		if err := rows.Scan(&b.Name, &b.CreatedAt); err != nil {
+			slog.Error("Scan bucket", "err", err)
+			continue
+		}
+		buckets = append(buckets, b)
+	}
+
+	resp := ListAllMyBucketsResult{
+		XMLNS: s3XMLNamespace,
+	}
+	resp.Owner.ID = "silo"
+	resp.Owner.DisplayName = "silo"
+	for _, b := range buckets {
+		resp.Buckets = append(resp.Buckets, struct {
+			Name         string `xml:"Name"`
+			CreationDate string `xml:"CreationDate"`
+		}{
+			Name:         b.Name,
+			CreationDate: b.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode list buckets XML", "err", err)
 	}
 }
 
@@ -708,103 +979,6 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 	}
 }
 
-// handleDeleteObject implements DELETE /bucket/key to delete an object.
-func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
-	if !validateObjectKeyOrError(w, r, key) {
-		return
-	}
-
-	q := r.URL.Query()
-	switch {
-	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "DeleteObjectTagging")
-		return
-	case q.Has("uploadId"):
-		s.writeNotImplemented(w, r, "AbortMultipartUpload")
-		return
-	}
-
-	_, err := s.db.Exec(`DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
-	if err != nil {
-		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	// Note: we intentionally do not garbage-collect unreferenced payload
-	// files yet. That can be added later based on hash reference counts.
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleHeadBucket implements HEAD /bucket.
-func (s *Server) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
-
-	// Ensure bucket exists.
-	if exists, err := s.bucketExists(bucket); err != nil {
-		slog.Error("Head bucket", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	} else if !exists {
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
-
-	// S3-compatible HEAD bucket: 200 with no body.
-	w.WriteHeader(http.StatusOK)
-}
-
-// handleHeadObject implements HEAD /bucket/key, returning metadata headers
-// compatible with S3 but without a response body.
-func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
-	if !validateObjectKeyOrError(w, r, key) {
-		return
-	}
-
-	var (
-		hashHex     string
-		size        int64
-		contentType sql.NullString
-		createdAt   time.Time
-	)
-
-	err := s.db.QueryRow(
-		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
-		bucket, key,
-	).Scan(&hashHex, &size, &contentType, &createdAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		slog.Error("Lookup object metadata (HEAD)", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	if contentType.Valid {
-		w.Header().Set("Content-Type", contentType.String)
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
-	}
-	if size >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-	}
-	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
-	w.Header().Set("ETag", createETag(hashHex))
-	w.Header().Set("Accept-Ranges", "bytes")
-
-	w.WriteHeader(http.StatusOK)
-}
-
 // handleDeleteBucket implements DELETE /bucket for the primary bucket
 // deletion operation (without subresources). It removes the bucket's
 // metadata entry and cascades object rows, then asks the storage engine to
@@ -838,53 +1012,9 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, buck
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleBucketDelete implements DELETE /bucket[?subresource].
-func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
-
-	q := r.URL.Query()
-	switch {
-	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "DeleteBucketTagging")
-	case q.Has("encryption"):
-		s.writeNotImplemented(w, r, "DeleteBucketEncryption")
-	case q.Has("cors"):
-		s.writeNotImplemented(w, r, "DeleteBucketCors")
-	case q.Has("lifecycle"):
-		s.writeNotImplemented(w, r, "DeleteBucketLifecycle")
-	case q.Has("policy"):
-		s.writeNotImplemented(w, r, "DeleteBucketPolicy")
-	case q.Has("replication"):
-		s.writeNotImplemented(w, r, "DeleteBucketReplication")
-	default:
-		// Primary bucket deletion (no subresources).
-		s.handleDeleteBucket(w, r, bucket)
-	}
-}
-
-// handleBucketPost implements POST /bucket[?subresource], such as DeleteObjects.
-func (s *Server) handleBucketPost(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
-
-	q := r.URL.Query()
-	switch {
-	case q.Has("delete"):
-		s.writeNotImplemented(w, r, "DeleteObjects")
-	default:
-		s.writeNotImplemented(w, r, "BucketPost")
-	}
-}
-
 // handleListObjects implements a simplified version of S3 ListObjects (v2)
 // for a single bucket: GET /bucket[?prefix=&max-keys=].
 func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(bucket); err != nil {
@@ -967,9 +1097,6 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 // handleListObjectsV2 implements S3 ListObjectsV2:
 // GET /bucket?list-type=2[&prefix=&max-keys=&continuation-token=&start-after=].
 func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(bucket); err != nil {
@@ -1070,140 +1197,4 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list objects v2 XML", "bucket", bucket, "err", err)
 	}
-}
-
-// handleObjectPost implements POST /bucket/key[?subresource] operations such
-// as CompleteMultipartUpload, RestoreObject, and SelectObjectContent.
-func (s *Server) handleObjectPost(w http.ResponseWriter, r *http.Request, bucket, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
-		return
-	}
-	if !validateObjectKeyOrError(w, r, key) {
-		return
-	}
-
-	q := r.URL.Query()
-	switch {
-	case q.Has("uploadId"):
-		s.writeNotImplemented(w, r, "CompleteMultipartUpload")
-	case q.Has("restore"):
-		s.writeNotImplemented(w, r, "RestoreObject")
-	case q.Has("select"):
-		s.writeNotImplemented(w, r, "SelectObjectContent")
-	default:
-		s.writeNotImplemented(w, r, "ObjectPost")
-	}
-}
-
-// writeNotImplemented is a helper for stubbing unsupported S3 operations.
-func (s *Server) writeNotImplemented(w http.ResponseWriter, r *http.Request, op string) {
-	message := fmt.Sprintf("%s is not implemented.", op)
-	writeS3Error(w, "NotImplemented", message, r.URL.Path, http.StatusNotImplemented)
-}
-
-// writeS3Error writes a minimal S3-style XML error response.
-func writeS3Error(w http.ResponseWriter, code string, message string, resource string, status int) {
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(status)
-	_ = xml.NewEncoder(w).Encode(S3Error{
-		Code:     code,
-		Message:  message,
-		Resource: resource,
-	})
-}
-
-// parentPrefixForKey returns the immediate parent prefix for a given S3
-// object key. For example:
-//
-//	"a/b/c.txt" -> "a/b/"
-//	"file.txt"  -> ""
-//	"dir/"      -> "" (treated as a top-level key whose name ends with '/')
-func parentPrefixForKey(key string) string {
-	trimmed := strings.TrimRight(key, "/")
-	idx := strings.LastIndex(trimmed, "/")
-	if idx == -1 {
-		return ""
-	}
-	// Include the trailing slash from the original key up to and including idx.
-	return key[:idx+1]
-}
-
-// isValidBucketName implements the standard S3 bucket naming rules for
-// "virtual hosted-style" buckets.
-func isValidBucketName(name string) bool {
-	if len(name) < 3 || len(name) > 63 {
-		return false
-	}
-
-	// Must consist only of lowercase letters, digits, dots, or hyphens,
-	// and must start and end with a letter or digit.
-	if !bucketNamePattern.MatchString(name) {
-		return false
-	}
-
-	// Disallow patterns like "..", ".-", "-.".
-	if strings.Contains(name, "..") {
-		return false
-	}
-
-	for i := 1; i < len(name); i++ {
-		if (name[i-1] == '.' && name[i] == '-') || (name[i-1] == '-' && name[i] == '.') {
-			return false
-		}
-	}
-
-	// Bucket name must not be formatted as an IPv4 address.
-	ip := net.ParseIP(name)
-	if ip != nil {
-		return false
-	}
-
-	return true
-}
-
-// isValidObjectKey enforces basic S3 object key constraints: non-empty,
-// at most 1024 bytes, and no control characters.
-func isValidObjectKey(key string) bool {
-	if len(key) == 0 || len(key) > 1024 {
-		return false
-	}
-
-	return !strings.ContainsFunc(key, func(c rune) bool {
-		return c < 0x20 || c == 0x7f
-	})
-}
-
-// validateBucketNameOrError writes an S3 InvalidBucketName error and returns
-// false if the provided name does not meet S3 bucket naming rules.
-func validateBucketNameOrError(w http.ResponseWriter, r *http.Request, bucket string) bool {
-	if !isValidBucketName(bucket) {
-		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", r.URL.Path, http.StatusBadRequest)
-		return false
-	}
-	return true
-}
-
-// validateObjectKeyOrError writes an S3-style error for invalid object keys.
-func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string) bool {
-	if !isValidObjectKey(key) {
-		writeS3Error(w, "InvalidObjectName", "The specified key is not valid.", r.URL.Path, http.StatusBadRequest)
-		return false
-	}
-	return true
-}
-
-// writeXMLResponse encodes v as XML and writes it to w with a 200 OK status.
-func writeXMLResponse(w http.ResponseWriter, v any) error {
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	if err := xml.NewEncoder(w).Encode(v); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// createETag formats a hash hex string as an ETag value.
-func createETag(hashHex string) string {
-	return fmt.Sprintf("\"%s\"", hashHex)
 }
