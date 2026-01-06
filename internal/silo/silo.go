@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"database/sql"
+	"embed"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -24,7 +26,12 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
+var (
+	//go:embed migrations
+	migrationsFS embed.FS
+
+	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
+)
 
 type Config struct {
 	DataDir string
@@ -77,46 +84,23 @@ func (s *Server) Close() error {
 	return s.db.Close()
 }
 
-// initSchema initializes the metadata database schema.
+// initSchema initializes the metadata database schema by applying all
+// SQL files in the embedded migrations directory executed in lexicographical order.
 func initSchema(db *sql.DB) error {
-	stmts := []string{
-		`PRAGMA foreign_keys = ON;`,
-		`CREATE TABLE IF NOT EXISTS buckets (
-			name TEXT PRIMARY KEY,
-			created_at TIMESTAMP NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS objects (
-			bucket TEXT NOT NULL,
-			key TEXT NOT NULL,
-			parent TEXT NOT NULL,
-			hash TEXT NOT NULL,
-			size INTEGER NOT NULL,
-			content_type TEXT,
-			created_at TIMESTAMP NOT NULL,
-			PRIMARY KEY (bucket, key),
-			FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
-		);`,
-	}
-
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("init schema: %w", err)
+	return fs.WalkDir(migrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			return nil
 		}
-	}
 
-	// Create indexes used for lookups by content hash and for efficient
-	// prefix-based listings (bucket + parent + key).
-	indexStmts := []string{
-		`CREATE INDEX IF NOT EXISTS idx_objects_hash ON objects(hash);`,
-		`CREATE INDEX IF NOT EXISTS idx_objects_parent ON objects(bucket, parent, key);`,
-	}
-
-	for _, stmt := range indexStmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("init schema indexes: %w", err)
+		content, err := migrationsFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("error reading SQL file: %w", err)
 		}
-	}
-	return nil
+
+		slog.Info("Running migration", "path", path)
+		_, err = db.Exec(string(content))
+		return err
+	})
 }
 
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
