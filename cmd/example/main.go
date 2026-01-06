@@ -21,7 +21,7 @@ func getenv(key, fallback string) string {
 }
 
 func main() {
-	endpoint := getenv("MINIO_ENDPOINT", "localhost:8080")
+	endpoint := getenv("MINIO_ENDPOINT", "localhost:9000")
 	accessKey := getenv("MINIO_ACCESS_KEY", "minioadmin")
 	secretKey := getenv("MINIO_SECRET_KEY", "minioadmin")
 	bucketName := getenv("MINIO_BUCKET", "example-bucket")

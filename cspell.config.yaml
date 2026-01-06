@@ -5,6 +5,7 @@ dictionaries: []
 words:
   - charmbracelet
   - davecgh
+  - errgroup
   - go-difflib
   - gopkg
   - mattn
