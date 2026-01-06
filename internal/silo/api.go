@@ -4,18 +4,22 @@ import "encoding/xml"
 
 const s3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
+type ListAllMyBucketsOwner struct {
+	ID          string `xml:"ID"`
+	DisplayName string `xml:"DisplayName"`
+}
+
+type ListAllMyBucketsEntry struct {
+	Name         string `xml:"Name"`
+	CreationDate string `xml:"CreationDate"`
+}
+
 // ListAllMyBucketsResult represents the XML response for the S3 ListBuckets API.
 type ListAllMyBucketsResult struct {
-	XMLName xml.Name `xml:"ListAllMyBucketsResult"`
-	XMLNS   string   `xml:"xmlns,attr"`
-	Owner   struct {
-		ID          string `xml:"ID"`
-		DisplayName string `xml:"DisplayName"`
-	} `xml:"Owner"`
-	Buckets []struct {
-		Name         string `xml:"Name"`
-		CreationDate string `xml:"CreationDate"`
-	} `xml:"Buckets>Bucket"`
+	XMLName xml.Name                `xml:"ListAllMyBucketsResult"`
+	XMLNS   string                  `xml:"xmlns,attr"`
+	Owner   ListAllMyBucketsOwner   `xml:"Owner"`
+	Buckets []ListAllMyBucketsEntry `xml:"Buckets>Bucket"`
 }
 
 // ListBucketResult represents the XML response for the S3 ListObjects API.

@@ -223,11 +223,7 @@ func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string
 func writeXMLResponse(w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	if err := xml.NewEncoder(w).Encode(v); err != nil {
-		return err
-	}
-
-	return nil
+	return xml.NewEncoder(w).Encode(v)
 }
 
 // createETag formats a hash hex string as an ETag value.
@@ -839,16 +835,10 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var buckets []struct {
-		Name      string
-		CreatedAt time.Time
-	}
+	buckets := make([]ListAllMyBucketsEntry, 0)
 	for rows.Next() {
-		var b struct {
-			Name      string
-			CreatedAt time.Time
-		}
-		if err := rows.Scan(&b.Name, &b.CreatedAt); err != nil {
+		var b ListAllMyBucketsEntry
+		if err := rows.Scan(&b.Name, &b.CreationDate); err != nil {
 			slog.Error("Scan bucket", "err", err)
 			continue
 		}
@@ -857,17 +847,11 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 
 	resp := ListAllMyBucketsResult{
 		XMLNS: s3XMLNamespace,
-	}
-	resp.Owner.ID = "silo"
-	resp.Owner.DisplayName = "silo"
-	for _, b := range buckets {
-		resp.Buckets = append(resp.Buckets, struct {
-			Name         string `xml:"Name"`
-			CreationDate string `xml:"CreationDate"`
-		}{
-			Name:         b.Name,
-			CreationDate: b.CreatedAt.UTC().Format(time.RFC3339),
-		})
+		Owner: ListAllMyBucketsOwner{
+			ID:          "silo",
+			DisplayName: "silo",
+		},
+		Buckets: buckets,
 	}
 
 	if err := writeXMLResponse(w, resp); err != nil {
