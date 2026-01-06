@@ -497,57 +497,8 @@ func (s *Server) handleObjectGet(w http.ResponseWriter, r *http.Request, bucket 
 	case q.Has("uploadId"):
 		s.writeNotImplemented(w, r, "ListParts")
 		return
-	}
-
-	var (
-		hashHex     string
-		size        int64
-		contentType sql.NullString
-		createdAt   time.Time
-	)
-
-	err := s.db.QueryRow(
-		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
-		bucket, key,
-	).Scan(&hashHex, &size, &contentType, &createdAt)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
-
-	if err != nil {
-		slog.Error("Lookup object metadata", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	data, err := s.cfg.Engine.GetObject(bucket, hashHex)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "object payload missing", http.StatusInternalServerError)
-			return
-		}
-		slog.Error("Read object payload", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	if contentType.Valid {
-		w.Header().Set("Content-Type", contentType.String)
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
-	}
-	if size >= 0 {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
-	}
-	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
-	w.Header().Set("ETag", createETag(hashHex))
-	w.Header().Set("Accept-Ranges", "bytes")
-
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(data); err != nil {
-		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
+	default:
+		s.handleGetObject(w, r, bucket, key)
 	}
 }
 
@@ -781,6 +732,65 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 }
 
 // ------ Individual API HTTP handlers ------
+
+func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	var (
+		hashHex     string
+		size        int64
+		contentType sql.NullString
+		createdAt   time.Time
+	)
+
+	err := s.db.QueryRow(
+		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
+		bucket, key,
+	).Scan(&hashHex, &size, &contentType, &createdAt)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	if err != nil {
+		slog.Error("Lookup object metadata", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	data, err := s.cfg.Engine.GetObject(bucket, hashHex)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "object payload missing", http.StatusInternalServerError)
+			return
+		}
+		slog.Error("Read object payload", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	if size != int64(len(data)) {
+		slog.Error("Object size mismatch", "bucket", bucket, "key", key, "expected", size, "actual", len(data))
+		http.Error(w, "object size mismatch", http.StatusInternalServerError)
+		return
+	}
+
+	if contentType.Valid {
+		w.Header().Set("Content-Type", contentType.String)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if size >= 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+	}
+	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("ETag", createETag(hashHex))
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(data); err != nil {
+		slog.Error("Stream object", "bucket", bucket, "key", key, "err", err)
+	}
+}
 
 // handleCreateBucket implements PUT /bucket to create a new bucket.
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {

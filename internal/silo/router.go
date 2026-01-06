@@ -51,7 +51,7 @@ func LogRequest(next http.Handler) http.Handler {
 		case writer.WrittenResponseCode >= 500:
 			slog.Error("Request", userAttrs, requestAttrs)
 		case writer.WrittenResponseCode >= 400:
-			slog.Error("Request", userAttrs, requestAttrs)
+			slog.Warn("Request", userAttrs, requestAttrs)
 		default:
 			slog.Info("Request", userAttrs, requestAttrs)
 		}

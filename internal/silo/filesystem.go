@@ -6,16 +6,7 @@ import (
 	"syscall"
 )
 
-// CopyOrLinkFile attempts to create a hard link from srcPath to destPath.
-// If that fails, it falls back to copying the file contents.
-func CopyOrLinkFile(srcPath string, destPath string) error {
-
-	// Attempt to create a hard link from src to dest. If that fails, fall back
-	// to copying the file contents.
-	if err := os.Link(srcPath, destPath); err == nil {
-		return nil
-	}
-
+func CopyFile(srcPath string, destPath string) error {
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		return err
@@ -30,6 +21,33 @@ func CopyOrLinkFile(srcPath string, destPath string) error {
 
 	_, err = destFile.ReadFrom(srcFile)
 	return err
+}
+
+// CopyOrLinkFile attempts to create a hard link from srcPath to destPath.
+// If that fails, it falls back to copying the file contents.
+func CopyOrLinkFile(srcPath string, destPath string) error {
+
+	if srcPath == destPath {
+		return nil
+	}
+
+	// NOTE(eteran): this bit is actually important because we can end up
+	// accidentally truncating the destination file if it already exists when
+	// we try to create a hard link.
+	//
+	// So we have to remove the destination file first if it exists in order to
+	// break the link first.
+	if err := os.Remove(destPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	// Attempt to create a hard link from src to dest. If that succeeds, we're
+	// done and haven't touched any file contents.
+	if err := os.Link(srcPath, destPath); err == nil {
+		return nil
+	}
+
+	return CopyFile(srcPath, destPath)
 }
 
 func MoveFile(srcPath string, destPath string) error {
