@@ -85,7 +85,7 @@ func (s *Server) Close() error {
 }
 
 // initSchema initializes the metadata database schema by applying all
-// SQL files in the embedded migrations directory executed in lexicographical order.
+// SQL files in the embedded migrations in lexicographical order.
 func initSchema(db *sql.DB) error {
 	return fs.WalkDir(migrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
 		if d.IsDir() {
