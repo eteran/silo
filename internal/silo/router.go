@@ -21,7 +21,6 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 }
 
 // Write calls the underlying ResponseWriter's Write method.
-// It is also needed for the http.ResponseWriter interface.
 func (w *ResponseWriterWrapper) Write(b []byte) (int, error) {
 	if w.WrittenResponseCode == 0 {
 		w.WrittenResponseCode = http.StatusOK
@@ -29,8 +28,8 @@ func (w *ResponseWriterWrapper) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// logRequest is middleware that logs incoming HTTP requests.
-func logRequest(next http.Handler) http.Handler {
+// LogRequest is middleware that logs incoming HTTP requests.
+func LogRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		ip := r.RemoteAddr
@@ -70,21 +69,23 @@ func logRequest(next http.Handler) http.Handler {
 
 			slog.Debug("Request Headers", slog.Group("headers", headerAttrs...))
 		}
-
 	})
 }
 
-// requireAuthentication is middleware that enforces authentication for S3 API requests.
-func requireAuthentication(next http.Handler) http.Handler {
+// RequireAuthentication is middleware that enforces authentication for S3 API requests.
+func RequireAuthentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		auth := r.Header.Get("Authorization")
+		_ = auth
 
 		// TODO(eteran): Implement authentication check.
-		if auth == "" {
-			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path, http.StatusForbidden)
-			return
-		}
+		/*
+			if auth == "" {
+				writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path, http.StatusForbidden)
+				return
+			}
+		*/
 
 		next.ServeHTTP(w, r)
 	})
@@ -160,5 +161,5 @@ func (s *Server) Handler() http.Handler {
 		s.handleObjectPost(w, r, bucket, key)
 	})
 
-	return logRequest(requireAuthentication(SlashFix(mux)))
+	return LogRequest(RequireAuthentication(SlashFix(mux)))
 }

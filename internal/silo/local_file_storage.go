@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // LocalFileStorage is a StorageEngine implementation that stores object
@@ -20,14 +21,74 @@ func NewLocalFileStorage(dataDir string) *LocalFileStorage {
 	return &LocalFileStorage{dataDir: dataDir}
 }
 
-func (s *LocalFileStorage) objectPath(bucket, hashHex string) (string, error) {
+// CopyOrLinkFile attempts to create a hard link from srcPath to destPath.
+// If that fails, it falls back to copying the file contents.
+func CopyOrLinkFile(srcPath string, destPath string) error {
+
+	// Remove any existing file at destPath.
+	if err := os.Remove(destPath); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	// Attempt to create a hard link from src to dest. If that fails, fall back
+	// to copying the file contents.
+	if err := os.Link(srcPath, destPath); err == nil {
+		return nil
+	}
+
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = destFile.ReadFrom(srcFile)
+	return err
+}
+
+// objectPath computes the full filesystem path for the object identified by
+// hashHex within the given bucket.
+func (s *LocalFileStorage) objectPath(bucket string, hashHex string) (string, error) {
 	if len(hashHex) < 2 {
 		return "", fmt.Errorf("invalid hash length: %d", len(hashHex))
 	}
 	subdir := hashHex[:2]
-	bucketDir := filepath.Join(s.dataDir, bucket)
-	storeDir := filepath.Join(bucketDir, subdir)
-	return filepath.Join(storeDir, hashHex), nil
+	return filepath.Join(s.dataDir, bucket, subdir, hashHex), nil
+}
+
+func (s *LocalFileStorage) locateExistingObject(targetObject string, hashHex string, size int64) []string {
+	// If an object with the same hash and size already exists in any bucket,
+	// create a hard link instead of writing a new copy.
+	subdir := hashHex[:2]
+	pattern := filepath.Join(s.dataDir, "*", subdir, hashHex)
+	matches, _ := filepath.Glob(pattern)
+
+	results := []string{}
+
+	for _, existing := range matches {
+		if existing == targetObject {
+			continue
+		}
+		info, err := os.Stat(existing)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Size() != size {
+			continue
+		}
+
+		results = append(results, existing)
+	}
+
+	return results
 }
 
 func (s *LocalFileStorage) PutObject(bucket string, hashHex string, data []byte) error {
@@ -38,24 +99,12 @@ func (s *LocalFileStorage) PutObject(bucket string, hashHex string, data []byte)
 
 	// If an object with the same hash and size already exists in any bucket,
 	// create a hard link instead of writing a new copy.
-	subdir := hashHex[:2]
-	pattern := filepath.Join(s.dataDir, "*", subdir, hashHex)
-	matches, _ := filepath.Glob(pattern)
+	matches := s.locateExistingObject(objPath, hashHex, int64(len(data)))
 	for _, existing := range matches {
-		if existing == objPath {
-			continue
-		}
-		info, err := os.Stat(existing)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		if info.Size() != int64(len(data)) {
-			continue
-		}
 		if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
 			return err
 		}
-		if err := os.Link(existing, objPath); err == nil {
+		if err := CopyOrLinkFile(existing, objPath); err == nil {
 			return nil
 		}
 	}
@@ -77,25 +126,13 @@ func (s *LocalFileStorage) PutObjectFromFile(bucket string, hashHex string, temp
 	}
 
 	// If an object with the same hash and size already exists in any bucket,
-	// create a hard link instead of moving or copying the temp file.
-	subdir := hashHex[:2]
-	pattern := filepath.Join(s.dataDir, "*", subdir, hashHex)
-	matches, _ := filepath.Glob(pattern)
+	// create a hard link instead of writing a new copy.
+	matches := s.locateExistingObject(objPath, hashHex, size)
 	for _, existing := range matches {
-		if existing == objPath {
-			continue
-		}
-		info, err := os.Stat(existing)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		if info.Size() != size {
-			continue
-		}
 		if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
 			return err
 		}
-		if err := os.Link(existing, objPath); err == nil {
+		if err := CopyOrLinkFile(existing, objPath); err == nil {
 			return nil
 		}
 	}
@@ -105,6 +142,19 @@ func (s *LocalFileStorage) PutObjectFromFile(bucket string, hashHex string, temp
 		return err
 	}
 	if err := os.Rename(tempPath, objPath); err != nil {
+		// If the temp file lives on a different filesystem, fall back to
+		// copying its contents into place instead of renaming.
+		if linkErr, ok := err.(*os.LinkError); ok && linkErr.Err == syscall.EXDEV {
+			if copyErr := CopyOrLinkFile(tempPath, objPath); copyErr != nil {
+				return copyErr
+			}
+			// Best-effort cleanup of the temporary file; ignore ENOENT in case
+			// the storage engine moved or removed it.
+			if rmErr := os.Remove(tempPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+			return nil
+		}
 		return err
 	}
 
@@ -143,13 +193,7 @@ func (s *LocalFileStorage) CopyObject(srcBucket, hashHex, destBucket string) err
 		return err
 	}
 
-	// Attempt to create a hard link from src to dest. If a file already exists
-	// at destPath, leave it as-is.
-	if _, err := os.Stat(destPath); err == nil {
-		return nil
-	}
-
-	return os.Link(srcPath, destPath)
+	return CopyOrLinkFile(srcPath, destPath)
 }
 
 func (s *LocalFileStorage) GetObject(bucket string, hashHex string) ([]byte, error) {
