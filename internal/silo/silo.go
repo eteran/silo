@@ -103,6 +103,22 @@ func initSchema(db *sql.DB) error {
 	})
 }
 
+func (s *Server) bucketExists(bucket string) (bool, error) {
+	// Ensure bucket exists.
+	var bucketName string
+	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+
+	if err != nil {
+		slog.Error("Get bucket location", "bucket", bucket, "err", err)
+		return false, err
+	}
+
+	return true, nil
+}
+
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
 // and various bucket configuration APIs.
 func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket string) {
@@ -205,17 +221,14 @@ func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket 
 
 // handleGetBucketLocation implements GET /bucket?location
 func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request, bucket string) {
-	// Ensure bucket exists.
-	var bucketName string
-	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
 
-	if err != nil {
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
 		slog.Error("Get bucket location", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
 
@@ -732,16 +745,13 @@ func (s *Server) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket
 		return
 	}
 
-	// Check whether the bucket exists.
-	var bucketName string
-	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
-	if err != nil {
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
 		slog.Error("Head bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
 
@@ -795,6 +805,39 @@ func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleDeleteBucket implements DELETE /bucket for the primary bucket
+// deletion operation (without subresources). It removes the bucket's
+// metadata entry and cascades object rows, then asks the storage engine to
+// delete the corresponding on-disk data.
+func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
+		slog.Error("Delete bucket lookup", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	// Delete the bucket row; foreign-key cascade removes its objects.
+	if _, err := s.db.Exec(`DELETE FROM buckets WHERE name = ?`, bucket); err != nil {
+		slog.Error("Delete bucket metadata", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	// Remove on-disk contents for the bucket.
+	if err := s.cfg.Engine.DeleteBucket(bucket); err != nil {
+		slog.Error("Delete bucket storage", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleBucketDelete implements DELETE /bucket[?subresource].
 func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, bucket string) {
 	if !validateBucketNameOrError(w, r, bucket) {
@@ -816,7 +859,8 @@ func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, buck
 	case q.Has("replication"):
 		s.writeNotImplemented(w, r, "DeleteBucketReplication")
 	default:
-		s.writeNotImplemented(w, r, "DeleteBucket")
+		// Primary bucket deletion (no subresources).
+		s.handleDeleteBucket(w, r, bucket)
 	}
 }
 
@@ -843,15 +887,12 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 	}
 
 	// Ensure bucket exists.
-	var bucketName string
-	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
-	if err != nil {
+	if exists, err := s.bucketExists(bucket); err != nil {
 		slog.Error("Check bucket exists", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
 
@@ -931,16 +972,12 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	}
 
 	// Ensure bucket exists.
-	// TODO(eteran): likely unnecessary...
-	var bucketName string
-	err := s.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&bucketName)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
-		return
-	}
-	if err != nil {
+	if exists, err := s.bucketExists(bucket); err != nil {
 		slog.Error("Check bucket exists (v2)", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
 

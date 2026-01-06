@@ -3,6 +3,7 @@ package silo
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/xml"
 	"io"
@@ -825,4 +826,77 @@ func TestNotImplementedRoutes(t *testing.T) {
 			require.Equal(t, "NotImplemented", s3Err.Code, "S3 error code")
 		})
 	}
+}
+
+func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "delete-bucket"
+	key := "obj.txt"
+	body := []byte("to-be-deleted")
+
+	// PUT object (auto-creates bucket and metadata).
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT object error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
+
+	// Ensure bucket metadata exists.
+	var name string
+	err = srv.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
+	require.NoError(t, err, "expected bucket metadata to exist before delete")
+	require.Equal(t, bucket, name, "bucket name in metadata")
+
+	// Ensure bucket directory exists on disk.
+	bucketPath := filepath.Join(srv.cfg.DataDir, bucket)
+	info, err := os.Stat(bucketPath)
+	require.NoError(t, err, "expected bucket directory to exist before delete")
+	require.True(t, info.IsDir(), "bucket path should be a directory")
+
+	// DELETE the bucket.
+	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating DELETE bucket request")
+	delResp, err := client.Do(delReq)
+	require.NoError(t, err, "DELETE bucket error")
+	delResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE bucket status")
+
+	// Bucket metadata should be gone.
+	err = srv.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
+	require.Error(t, err, "expected bucket metadata to be removed")
+	require.ErrorIs(t, err, sql.ErrNoRows, "expected ErrNoRows for deleted bucket")
+
+	// Bucket directory should be removed from disk.
+	_, err = os.Stat(bucketPath)
+	require.Error(t, err, "expected bucket directory to be removed")
+	require.True(t, os.IsNotExist(err), "expected bucket path to not exist")
+}
+
+func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "missing-bucket"
+
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating DELETE bucket request")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err, "DELETE bucket error")
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, resp.StatusCode, "DELETE bucket status")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
 }

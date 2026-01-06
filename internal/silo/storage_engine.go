@@ -21,4 +21,9 @@ type StorageEngine interface {
 	// DeleteObject removes the payload associated with the given hash in the
 	// specified bucket.
 	DeleteObject(bucket string, hashHex string) error
+
+	// DeleteBucket removes all payloads and any associated filesystem
+	// structures for the given bucket. Implementations should behave as if
+	// the bucket's storage root were recursively deleted.
+	DeleteBucket(bucket string) error
 }

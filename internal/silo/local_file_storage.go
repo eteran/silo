@@ -166,3 +166,10 @@ func (s *LocalFileStorage) DeleteObject(bucket string, hashHex string) error {
 	_ = hashHex
 	return nil
 }
+
+// DeleteBucket removes all on-disk payloads for the given bucket by
+// recursively deleting the bucket's directory under the storage root.
+func (s *LocalFileStorage) DeleteBucket(bucket string) error {
+	bucketPath := filepath.Join(s.dataDir, bucket)
+	return os.RemoveAll(bucketPath)
+}
