@@ -28,6 +28,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	require.NoError(t, err, "NewServer error")
 
 	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { _ = srv.Close() })
 	t.Cleanup(httpSrv.Close)
 
 	return srv, httpSrv
