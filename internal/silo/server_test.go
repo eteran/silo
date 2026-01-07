@@ -14,36 +14,58 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
+type authTransport struct {
+	base http.RoundTripper
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	req2 := req.Clone(req.Context())
+	if req2.Header.Get("Authorization") == "" {
+		req2.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	}
+	return base.RoundTrip(req2)
+}
+
 // newTestServer creates a Server backed by temporary filesystem and SQLite DB.
-func newTestServer(t *testing.T) (*Server, *httptest.Server) {
+// It also returns an HTTP client that automatically adds the default test
+// credentials if no Authorization header is present.
+func newTestServer(t *testing.T) (*Server, *httptest.Server, *http.Client) {
 	t.Helper()
 
 	dataDir := t.TempDir()
 
-	srv, err := NewServer(Config{DataDir: dataDir})
+	srv, err := NewServer(t.Context(), Config{DataDir: dataDir})
 	require.NoError(t, err, "NewServer error")
 
 	httpSrv := httptest.NewServer(srv.Handler())
+	client := httpSrv.Client()
+	client.Transport = &authTransport{base: client.Transport}
+
 	t.Cleanup(func() { _ = srv.Close() })
 	t.Cleanup(httpSrv.Close)
 
-	return srv, httpSrv
+	return srv, httpSrv, client
 }
 
 func TestCreateAndListBuckets(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	for _, b := range []string{"bucket1", "bucket2"} {
-		req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+b, nil)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+b, nil)
 		require.NoError(t, err, "creating PUT request")
+		signRequestBasic(req)
 		resp, err := client.Do(req)
 		require.NoErrorf(t, err, "PUT bucket %s error", b)
 		resp.Body.Close()
@@ -51,7 +73,10 @@ func TestCreateAndListBuckets(t *testing.T) {
 	}
 
 	// List buckets
-	resp, err := client.Get(httpSrv.URL + "/")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/", nil)
+	require.NoError(t, err, "creating GET / request")
+	signRequestBasic(req)
+	resp, err := client.Do(req)
 	require.NoError(t, err, "GET / error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET / status")
@@ -70,8 +95,7 @@ func TestCreateAndListBuckets(t *testing.T) {
 
 func TestInvalidBucketNames(t *testing.T) {
 	t.Parallel()
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	tests := []struct {
 		name   string
@@ -86,10 +110,10 @@ func TestInvalidBucketNames(t *testing.T) {
 
 	for _, tc := range tests {
 		// capture range variable
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+tc.bucket, nil)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+tc.bucket, nil)
 			require.NoError(t, err, "creating PUT request")
+			signRequestBasic(req)
 
 			resp, err := client.Do(req)
 			require.NoError(t, err, "PUT bucket error")
@@ -109,17 +133,17 @@ func TestInvalidBucketNames(t *testing.T) {
 func TestPutGetHeadDeleteObject(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "test-bucket"
 	key := "dir1/object.txt"
 	body := []byte("hello world")
 
 	// PUT object (this will auto-create the bucket).
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
 	req.Header.Set("Content-Type", "text/plain")
+	signRequestBasic(req)
 
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT object error")
@@ -139,8 +163,9 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 	require.Equal(t, string(body), string(data), "GET object body")
 
 	// HEAD object
-	headReq, err := http.NewRequest(http.MethodHead, httpSrv.URL+"/"+bucket+"/"+key, nil)
+	headReq, err := http.NewRequestWithContext(t.Context(), http.MethodHead, httpSrv.URL+"/"+bucket+"/"+key, nil)
 	require.NoError(t, err, "creating HEAD request")
+	signRequestBasic(headReq)
 	headResp, err := client.Do(headReq)
 	require.NoError(t, err, "HEAD object error")
 	headResp.Body.Close()
@@ -149,8 +174,9 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 	require.Equal(t, "11", headResp.Header.Get("Content-Length"), "HEAD Content-Length")
 
 	// DELETE object
-	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket+"/"+key, nil)
+	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket+"/"+key, nil)
 	require.NoError(t, err, "creating DELETE request")
+	signRequestBasic(delReq)
 	delResp, err := client.Do(delReq)
 	require.NoError(t, err, "DELETE object error")
 	delResp.Body.Close()
@@ -164,16 +190,18 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 }
 
 func TestObjectStoredBySHA256Path(t *testing.T) {
-	srv, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	t.Parallel()
+
+	srv, httpSrv, client := newTestServer(t)
 
 	bucket := "sha-bucket"
 	key := "file.bin"
 	body := []byte("abc123")
 
 	// PUT object
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT request")
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT object error")
 	resp.Body.Close()
@@ -192,14 +220,16 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 func TestListObjects(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "list-bucket"
 
 	// Create the bucket first.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	signRequestBasic(req)
+	signRequestBasic(req)
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -208,8 +238,9 @@ func TestListObjects(t *testing.T) {
 	// Upload objects with and without the prefix.
 	keys := []string{"dir/a.txt", "dir/b.txt", "other.txt"}
 	for _, key := range keys {
-		putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
+		putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
 		require.NoError(t, err, "creating PUT object request")
+		signRequestBasic(putReq)
 		putResp, err := client.Do(putReq)
 		require.NoError(t, err, "PUT object error")
 		putResp.Body.Close()
@@ -242,13 +273,12 @@ func TestListObjects(t *testing.T) {
 func TestGetBucketLocation(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "location-bucket"
 
 	// Create the bucket first.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
@@ -271,13 +301,12 @@ func TestGetBucketLocation(t *testing.T) {
 func TestPutAndGetBucketTagging(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "tag-bucket"
 
 	// Create the bucket first.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
@@ -295,9 +324,11 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
 
-	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT bucket tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
+	signRequestBasic(putReq)
+	signRequestBasic(putReq)
 
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT bucket tagging error")
@@ -325,8 +356,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 func TestGetBucketTaggingNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	resp, err := client.Get(httpSrv.URL + "/nonexistent-bucket?tagging")
 	require.NoError(t, err, "GET bucket tagging error")
@@ -343,14 +373,14 @@ func TestGetBucketTaggingNoSuchBucket(t *testing.T) {
 func TestGetBucketTaggingNoTagSet(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "empty-tag-bucket"
 
 	// Create the bucket without tags.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -372,8 +402,7 @@ func TestGetBucketTaggingNoTagSet(t *testing.T) {
 func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	tagging := Tagging{
 		XMLNS:  s3XMLNamespace,
@@ -382,7 +411,7 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
 
-	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/nonexistent-bucket?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/nonexistent-bucket?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT bucket tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
 
@@ -401,16 +430,17 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 func TestPutAndGetObjectTagging(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "obj-tag-bucket"
 	key := "obj.txt"
 	body := []byte("payload")
 
 	// PUT object (auto-creates bucket).
-	putObjReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	putObjReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
+	signRequestBasic(putObjReq)
+	signRequestBasic(putObjReq)
 	putObjResp, err := client.Do(putObjReq)
 	require.NoError(t, err, "PUT object error")
 	putObjResp.Body.Close()
@@ -427,9 +457,12 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
 
-	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT object tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
+	signRequestBasic(putReq)
+	signRequestBasic(putReq)
+	signRequestBasic(putReq)
 
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT object tagging error")
@@ -457,8 +490,7 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 func TestGetObjectTaggingNoSuchKey(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	resp, err := client.Get(httpSrv.URL + "/bucket/missing-key?tagging")
 	require.NoError(t, err, "GET object tagging error")
@@ -475,15 +507,14 @@ func TestGetObjectTaggingNoSuchKey(t *testing.T) {
 func TestGetObjectTaggingNoTagSet(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "obj-empty-tag-bucket"
 	key := "obj.txt"
 	body := []byte("payload")
 
 	// PUT object (auto-creates bucket) without tags.
-	putObjReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	putObjReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
 	putObjResp, err := client.Do(putObjReq)
 	require.NoError(t, err, "PUT object error")
@@ -506,15 +537,14 @@ func TestGetObjectTaggingNoTagSet(t *testing.T) {
 func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "obj-delete-tag-bucket"
 	key := "obj.txt"
 	body := []byte("payload")
 
 	// PUT object (auto-creates bucket).
-	putObjReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	putObjReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
 	putObjResp, err := client.Do(putObjReq)
 	require.NoError(t, err, "PUT object error")
@@ -529,7 +559,7 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
 
-	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT object tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
 
@@ -539,8 +569,9 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object tagging status")
 
 	// Delete tags.
-	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", nil)
+	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", nil)
 	require.NoError(t, err, "creating DELETE object tagging request")
+	signRequestBasic(delReq)
 	delResp, err := client.Do(delReq)
 	require.NoError(t, err, "DELETE object tagging error")
 	delResp.Body.Close()
@@ -562,14 +593,14 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "delete-tag-bucket"
 
 	// Create the bucket.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -585,7 +616,7 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
 
-	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT bucket tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
 
@@ -595,8 +626,9 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT bucket tagging status")
 
 	// Delete tags.
-	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket+"?tagging", nil)
+	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket+"?tagging", nil)
 	require.NoError(t, err, "creating DELETE bucket tagging request")
+	signRequestBasic(delReq)
 	delResp, err := client.Do(delReq)
 	require.NoError(t, err, "DELETE bucket tagging error")
 	delResp.Body.Close()
@@ -618,11 +650,11 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
-	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/nonexistent-bucket?tagging", nil)
+	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/nonexistent-bucket?tagging", nil)
 	require.NoError(t, err, "creating DELETE bucket tagging request")
+	signRequestBasic(delReq)
 
 	delResp, err := client.Do(delReq)
 	require.NoError(t, err, "DELETE bucket tagging error")
@@ -639,8 +671,7 @@ func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
 func TestCopyObjectWithinBucket(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	srv, httpSrv, client := newTestServer(t)
 
 	bucket := "copy-bucket"
 	srcKey := "src.txt"
@@ -648,17 +679,19 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 	body := []byte("copy-me")
 
 	// PUT source object (auto-creates bucket).
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+srcKey, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+srcKey, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT source request")
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT source error")
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
 
 	// Copy within the same bucket using x-amz-copy-source.
-	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+dstKey, nil)
+	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+dstKey, nil)
 	require.NoError(t, err, "creating CopyObject request")
 	copyReq.Header.Set("x-amz-copy-source", "/"+bucket+"/"+srcKey)
+	signRequestBasic(copyReq)
 	copyResp, err := client.Do(copyReq)
 	require.NoError(t, err, "CopyObject error")
 	copyResp.Body.Close()
@@ -688,8 +721,7 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 func TestCopyObjectAcrossBucketsCreatesHardLink(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	srv, httpSrv, client := newTestServer(t)
 
 	srcBucket := "src-bucket"
 	dstBucket := "dst-bucket"
@@ -697,17 +729,20 @@ func TestCopyObjectAcrossBucketsCreatesHardLink(t *testing.T) {
 	body := []byte("shared-copy-payload")
 
 	// PUT source object into src bucket.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT source request")
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT source error")
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
 
 	// Copy to destination bucket.
-	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
 	require.NoError(t, err, "creating CopyObject request")
 	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
+	signRequestBasic(copyReq)
+	signRequestBasic(copyReq)
 	copyResp, err := client.Do(copyReq)
 	require.NoError(t, err, "CopyObject error")
 	copyResp.Body.Close()
@@ -732,15 +767,14 @@ func TestCopyObjectAcrossBucketsCreatesHardLink(t *testing.T) {
 func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	srv, httpSrv, client := newTestServer(t)
 
 	bucket := "missing-payload-bucket"
 	key := "file.bin"
 	body := []byte("payload-to-delete")
 
 	// PUT object (auto-creates bucket and metadata).
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT request")
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT object error")
@@ -764,17 +798,17 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	srcBucket := "src-bucket-missing"
 	dstBucket := "dst-bucket-missing"
 	key := "file.bin"
 
 	// Do not PUT any source object; CopyObject should fail with NoSuchKey.
-	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
 	require.NoError(t, err, "creating CopyObject request")
 	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
+	signRequestBasic(copyReq)
 
 	copyResp, err := client.Do(copyReq)
 	require.NoError(t, err, "CopyObject error")
@@ -792,13 +826,12 @@ func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
 func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	dstBucket := "dst-bucket-invalid-source"
 	key := "file.bin"
 
-	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
 	require.NoError(t, err, "creating CopyObject request")
 	// Missing bucket/key separator; handler should consider this invalid.
 	copyReq.Header.Set("x-amz-copy-source", "invalid-source")
@@ -819,8 +852,7 @@ func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	srv, httpSrv, client := newTestServer(t)
 
 	srcBucket := "src-bucket-missing-payload"
 	dstBucket := "dst-bucket-missing-payload"
@@ -828,7 +860,7 @@ func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 	body := []byte("payload-to-delete-for-copy")
 
 	// PUT source object.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT source request")
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT source error")
@@ -843,7 +875,7 @@ func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 	require.NoError(t, os.Remove(srcPath), "removing source payload file")
 
 	// Attempt to CopyObject; metadata exists but payload is gone.
-	copyReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
+	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
 	require.NoError(t, err, "creating CopyObject request")
 	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
 
@@ -857,14 +889,14 @@ func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 func TestListObjectsV2Pagination(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "listv2-bucket"
 
 	// Create the bucket first.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	signRequestBasic(req)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -873,8 +905,9 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	// Upload three objects.
 	keys := []string{"a.txt", "b.txt", "c.txt"}
 	for _, key := range keys {
-		putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
+		putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
 		require.NoError(t, err, "creating PUT object request")
+		signRequestBasic(putReq)
 		putResp, err := client.Do(putReq)
 		require.NoError(t, err, "PUT object error")
 		putResp.Body.Close()
@@ -927,13 +960,12 @@ func TestListObjectsV2Pagination(t *testing.T) {
 func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "listv2-prefix-bucket"
 
 	// Create the bucket first.
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
@@ -943,7 +975,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	// Upload objects with and without the prefix.
 	keys := []string{"dir/a.txt", "dir/b.txt", "other.txt"}
 	for _, key := range keys {
-		putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
+		putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
 		require.NoError(t, err, "creating PUT object request")
 		putResp, err := client.Do(putReq)
 		require.NoError(t, err, "PUT object error")
@@ -999,8 +1031,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 func TestErrorResponsesTableDriven(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	tests := []struct {
 		name           string
@@ -1048,7 +1079,7 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 		// capture range variable
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, httpSrv.URL+tc.path, nil)
 			require.NoError(t, err, "creating request")
 
 			resp, err := client.Do(req)
@@ -1075,8 +1106,7 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 func TestUnknownRoutes(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	tests := []struct {
 		name   string
@@ -1104,7 +1134,7 @@ func TestUnknownRoutes(t *testing.T) {
 		// capture range variable
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, httpSrv.URL+tc.path, nil)
 			require.NoError(t, err, "creating request")
 
 			resp, err := client.Do(req)
@@ -1121,8 +1151,7 @@ func TestUnknownRoutes(t *testing.T) {
 func TestNotImplementedRoutes(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	tests := []struct {
 		name   string
@@ -1165,7 +1194,7 @@ func TestNotImplementedRoutes(t *testing.T) {
 		// capture range variable
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, httpSrv.URL+tc.path, nil)
 			if tc.name == "UploadPart" {
 				// Trigger copy-specific branches
 				req.Header.Set("x-amz-copy-source", "/src-bucket/src-object")
@@ -1190,15 +1219,14 @@ func TestNotImplementedRoutes(t *testing.T) {
 func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	srv, httpSrv, client := newTestServer(t)
 
 	bucket := "delete-bucket"
 	key := "obj.txt"
 	body := []byte("to-be-deleted")
 
 	// PUT object (auto-creates bucket and metadata).
-	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT request")
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT object error")
@@ -1207,7 +1235,7 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 
 	// Ensure bucket metadata exists.
 	var name string
-	err = srv.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
+	err = srv.db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
 	require.NoError(t, err, "expected bucket metadata to exist before delete")
 	require.Equal(t, bucket, name, "bucket name in metadata")
 
@@ -1218,7 +1246,7 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 	require.True(t, info.IsDir(), "bucket path should be a directory")
 
 	// DELETE the bucket.
-	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
+	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating DELETE bucket request")
 	delResp, err := client.Do(delReq)
 	require.NoError(t, err, "DELETE bucket error")
@@ -1226,7 +1254,7 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE bucket status")
 
 	// Bucket metadata should be gone.
-	err = srv.db.QueryRow(`SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
+	err = srv.db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
 	require.Error(t, err, "expected bucket metadata to be removed")
 	require.ErrorIs(t, err, sql.ErrNoRows, "expected ErrNoRows for deleted bucket")
 
@@ -1239,12 +1267,11 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv := newTestServer(t)
-	client := httpSrv.Client()
+	_, httpSrv, client := newTestServer(t)
 
 	bucket := "missing-bucket"
 
-	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating DELETE bucket request")
 
 	resp, err := client.Do(req)
@@ -1258,4 +1285,98 @@ func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 	}
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
 	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
+}
+
+func signRequestBasic(r *http.Request) {
+	r.SetBasicAuth(AccessKeyID, SecretAccessKey)
+}
+
+func signRequestSigV4(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	region := "us-east-1"
+	service := "s3"
+
+	// Minimal SigV4 implementation for tests, matching the server's logic.
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+
+	if r.Host == "" {
+		if r.URL.Host != "" {
+			r.Host = r.URL.Host
+		}
+	}
+	if r.Header.Get("Host") == "" && r.Host != "" {
+		r.Header.Set("Host", r.Host)
+	}
+
+	if r.Header.Get("X-Amz-Content-Sha256") == "" {
+		r.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
+	}
+	r.Header.Set("X-Amz-Date", amzDate)
+
+	signedHeaders := []string{"host", "x-amz-content-sha256", "x-amz-date"}
+	canonicalReq := buildCanonicalRequest(r, signedHeaders, r.Header.Get("X-Amz-Content-Sha256"))
+	crHash := sha256.Sum256([]byte(canonicalReq))
+	crHashHex := hex.EncodeToString(crHash[:])
+
+	credentialScope := strings.Join([]string{dateStamp, region, service, "aws4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credentialScope,
+		crHashHex,
+	}, "\n")
+
+	kSecret := []byte("AWS4" + SecretAccessKey)
+	kDate := hmacSHA256(kSecret, dateStamp)
+	kRegion := hmacSHA256(kDate, region)
+	kService := hmacSHA256(kRegion, service)
+	kSigning := hmacSHA256(kService, "aws4_request")
+	sig := hmacSHA256(kSigning, stringToSign)
+	sigHex := hex.EncodeToString(sig)
+
+	cred := strings.Join([]string{AccessKeyID, dateStamp, region, service, "aws4_request"}, "/")
+	auth := strings.Join([]string{
+		"AWS4-HMAC-SHA256 Credential=" + cred,
+		"SignedHeaders=host;x-amz-content-sha256;x-amz-date",
+		"Signature=" + sigHex,
+	}, ", ")
+
+	r.Header.Set("Authorization", auth)
+}
+
+func TestRequireAuthentication_AWSSigV4_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	handler := RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/test-bucket", nil)
+	signRequestSigV4(t, req)
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	require.Equal(t, http.StatusOK, resp.Code, "expected AWS SigV4-authenticated request to succeed")
+}
+
+func TestRequireAuthentication_AWSSigV4_InvalidSignature(t *testing.T) {
+	t.Parallel()
+
+	handler := RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/test-bucket", nil)
+	signRequestSigV4(t, req)
+	// Corrupt the signature.
+	req.Header.Set("Authorization", req.Header.Get("Authorization")+"0")
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	require.Equal(t, http.StatusForbidden, resp.Code, "expected invalid AWS SigV4 signature to be rejected")
 }

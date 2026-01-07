@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"silo/internal/silo"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -52,17 +53,19 @@ func Run(ctx context.Context) error {
 		DataDir: absDataDir,
 	}
 
-	server, err := silo.NewServer(cfg)
+	server, err := silo.NewServer(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create silo server: %w", err)
 	}
 
-	defer server.Close()
+	defer func() {
+		_ = server.Close()
+	}()
 
 	router := server.Handler()
 
 	httpServer := &http.Server{
-		Addr:              fmt.Sprintf(":%s", *ServerPortHttp),
+		Addr:              ":" + *ServerPortHttp,
 		Handler:           router,
 		ReadHeaderTimeout: 20 * time.Second,
 		ReadTimeout:       20 * time.Second,
@@ -74,7 +77,7 @@ func Run(ctx context.Context) error {
 			ClientAuth: tls.RequestClientCert,
 			MinVersion: tls.VersionTLS12,
 		},
-		Addr:              fmt.Sprintf(":%d", ServerPortHttps),
+		Addr:              ":" + strconv.Itoa(ServerPortHttps),
 		Handler:           router,
 		ReadHeaderTimeout: 20 * time.Second,
 		ReadTimeout:       20 * time.Second,
