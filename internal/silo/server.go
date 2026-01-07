@@ -135,9 +135,10 @@ func (s *Server) bucketExists(bucket string) (bool, error) {
 
 // ensureBucket makes sure the given bucket exists, creating it if necessary.
 func (s *Server) ensureBucket(name string) (sql.Result, error) {
+	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO buckets(name, created_at) VALUES(?, ?)`,
-		name, time.Now().UTC(),
+		`INSERT OR IGNORE INTO buckets(name, created_at, modified_at) VALUES(?, ?, ?)`,
+		name, now, now,
 	)
 	return res, err
 }
@@ -669,17 +670,18 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 
 	parent := parentPrefixForKey(key)
+	now := time.Now().UTC()
 
 	_, err = s.db.Exec(
-		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at, modified_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bucket, key) DO UPDATE SET
 		 	parent=excluded.parent,
 		 	hash=excluded.hash,
 		 	size=excluded.size,
 		 	content_type=excluded.content_type,
-		 	created_at=excluded.created_at`,
-		bucket, key, parent, hashHex, length, contentType, time.Now().UTC(),
+		 	modified_at=excluded.modified_at`,
+		bucket, key, parent, hashHex, length, contentType, now, now,
 	)
 	if err != nil {
 		slog.Error("Upsert object metadata", "bucket", bucket, "key", key, "err", err)
@@ -705,13 +707,13 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 		hashHex     string
 		size        int64
 		contentType sql.NullString
-		createdAt   time.Time
+		modifiedAt  time.Time
 	)
 
 	err := s.db.QueryRow(
-		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
+		`SELECT hash, size, content_type, modified_at FROM objects WHERE bucket = ? AND key = ?`,
 		bucket, key,
-	).Scan(&hashHex, &size, &contentType, &createdAt)
+	).Scan(&hashHex, &size, &contentType, &modifiedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 		return
@@ -730,7 +732,7 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 	if size >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
-	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("Last-Modified", modifiedAt.UTC().Format(http.TimeFormat))
 	w.Header().Set("ETag", createETag(hashHex))
 	w.Header().Set("Accept-Ranges", "bytes")
 
@@ -757,13 +759,13 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket 
 		hashHex     string
 		size        int64
 		contentType sql.NullString
-		createdAt   time.Time
+		modifiedAt  time.Time
 	)
 
 	err := s.db.QueryRow(
-		`SELECT hash, size, content_type, created_at FROM objects WHERE bucket = ? AND key = ?`,
+		`SELECT hash, size, content_type, modified_at FROM objects WHERE bucket = ? AND key = ?`,
 		bucket, key,
-	).Scan(&hashHex, &size, &contentType, &createdAt)
+	).Scan(&hashHex, &size, &contentType, &modifiedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
@@ -801,7 +803,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket 
 	if size >= 0 {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
 	}
-	w.Header().Set("Last-Modified", createdAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("Last-Modified", modifiedAt.UTC().Format(http.TimeFormat))
 	w.Header().Set("ETag", createETag(hashHex))
 	w.Header().Set("Accept-Ranges", "bytes")
 
@@ -883,6 +885,8 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	now := time.Now().UTC()
+
 	err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
 			slog.Error("Delete existing bucket tags", "bucket", bucket, "err", err)
@@ -906,6 +910,12 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 				writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 				return fmt.Errorf("error inserting tag `%s` %w", tag.Key, err)
 			}
+		}
+
+		if _, err := tx.Exec(`UPDATE buckets SET modified_at = ? WHERE name = ?`, now, bucket); err != nil {
+			slog.Error("Update bucket modified_at for tagging", "bucket", bucket, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return fmt.Errorf("error updating bucket modified_at %w", err)
 		}
 
 		return nil
@@ -963,6 +973,7 @@ func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, 
 // handleDeleteBucketTagging implements DELETE /bucket?tagging to remove all
 // tags associated with a bucket.
 func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
+	ctx := r.Context()
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(bucket); err != nil {
 		slog.Error("Delete bucket tagging lookup", "bucket", bucket, "err", err)
@@ -973,9 +984,24 @@ func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := s.db.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
-		slog.Error("Delete bucket tags", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+	now := time.Now().UTC()
+
+	if err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
+			slog.Error("Delete bucket tags", "bucket", bucket, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return fmt.Errorf("error deleting bucket tags %w", err)
+		}
+
+		if _, err := tx.Exec(`UPDATE buckets SET modified_at = ? WHERE name = ?`, now, bucket); err != nil {
+			slog.Error("Update bucket modified_at for delete tagging", "bucket", bucket, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return fmt.Errorf("error updating bucket modified_at %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		slog.Error("Delete bucket tagging transaction", "bucket", bucket, "err", err)
 		return
 	}
 
@@ -1083,7 +1109,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 	}
 
 	parent := parentPrefixForKey(destKey)
-	createdAt := time.Now().UTC()
+	now := time.Now().UTC()
 
 	var ct any
 	if contentType.Valid {
@@ -1093,15 +1119,15 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at, modified_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bucket, key) DO UPDATE SET
 		 	parent=excluded.parent,
 		 	hash=excluded.hash,
 		 	size=excluded.size,
 		 	content_type=excluded.content_type,
-		 	created_at=excluded.created_at`,
-		destBucket, destKey, parent, hashHex, size, ct, createdAt,
+		 	modified_at=excluded.modified_at`,
+		destBucket, destKey, parent, hashHex, size, ct, now, now,
 	)
 	if err != nil {
 		slog.Error("Upsert dest object metadata for copy", "destBucket", destBucket, "destKey", destKey, "err", err)
@@ -1111,7 +1137,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 
 	resp := CopyObjectResult{
 		XMLNS:        s3XMLNamespace,
-		LastModified: createdAt.UTC().Format(time.RFC3339),
+		LastModified: now.UTC().Format(time.RFC3339),
 		ETag:         createETag(hashHex),
 	}
 
@@ -1178,7 +1204,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 
 	// Fetch up to maxKeys+1 to determine truncation.
 	args := []any{bucket}
-	query := `SELECT key, hash, size, created_at FROM objects WHERE bucket = ?`
+	query := `SELECT key, hash, size, modified_at FROM objects WHERE bucket = ?`
 	if prefix != "" {
 		query += " AND key LIKE ?"
 		args = append(args, prefix+"%")
@@ -1197,18 +1223,18 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 	var summaries []ObjectSummary
 	for rows.Next() {
 		var (
-			key       string
-			hashHex   string
-			size      int64
-			createdAt time.Time
+			key        string
+			hashHex    string
+			size       int64
+			modifiedAt time.Time
 		)
-		if err := rows.Scan(&key, &hashHex, &size, &createdAt); err != nil {
+		if err := rows.Scan(&key, &hashHex, &size, &modifiedAt); err != nil {
 			slog.Error("Scan object", "bucket", bucket, "err", err)
 			continue
 		}
 		summaries = append(summaries, ObjectSummary{
 			Key:          key,
-			LastModified: createdAt.UTC().Format(time.RFC3339),
+			LastModified: modifiedAt.UTC().Format(time.RFC3339),
 			ETag:         createETag(hashHex),
 			Size:         size,
 			StorageClass: "STANDARD",
@@ -1266,7 +1292,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 
 	// Fetch up to maxKeys+1 to determine truncation.
 	args := []any{bucket}
-	query := `SELECT key, hash, size, created_at FROM objects WHERE bucket = ?`
+	query := `SELECT key, hash, size, modified_at FROM objects WHERE bucket = ?`
 	if prefix != "" {
 		query += " AND key LIKE ?"
 		args = append(args, prefix+"%")
@@ -1292,18 +1318,18 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	var summaries []ObjectSummary
 	for rows.Next() {
 		var (
-			key       string
-			hashHex   string
-			size      int64
-			createdAt time.Time
+			key        string
+			hashHex    string
+			size       int64
+			modifiedAt time.Time
 		)
-		if err := rows.Scan(&key, &hashHex, &size, &createdAt); err != nil {
+		if err := rows.Scan(&key, &hashHex, &size, &modifiedAt); err != nil {
 			slog.Error("Scan object (v2)", "bucket", bucket, "err", err)
 			continue
 		}
 		summaries = append(summaries, ObjectSummary{
 			Key:          key,
-			LastModified: createdAt.UTC().Format(time.RFC3339),
+			LastModified: modifiedAt.UTC().Format(time.RFC3339),
 			ETag:         createETag(hashHex),
 			Size:         size,
 			StorageClass: "STANDARD",

@@ -11,7 +11,8 @@ PRAGMA foreign_keys = ON;
 -- The size field stores the size of the object in bytes.
 CREATE TABLE IF NOT EXISTS buckets (
     name TEXT PRIMARY KEY,
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL,
+    modified_at TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS objects (
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS objects (
     size INTEGER NOT NULL,
     content_type TEXT,
     created_at TIMESTAMP NOT NULL,
+    modified_at TIMESTAMP NOT NULL,
     PRIMARY KEY (bucket, key),
     FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
 );
