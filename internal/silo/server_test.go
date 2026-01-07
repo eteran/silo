@@ -398,6 +398,83 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
 }
 
+func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "delete-tag-bucket"
+
+	// Create the bucket.
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating PUT bucket request")
+	resp, err := client.Do(req)
+	require.NoError(t, err, "PUT bucket error")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// Add tags.
+	tagging := BucketTagging{
+		XMLNS: s3XMLNamespace,
+		TagSet: []Tag{
+			{Key: "env", Value: "prod"},
+		},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
+
+	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	require.NoError(t, err, "creating PUT bucket tagging request")
+	putReq.Header.Set("Content-Type", "application/xml")
+
+	putResp, err := client.Do(putReq)
+	require.NoError(t, err, "PUT bucket tagging error")
+	putResp.Body.Close()
+	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT bucket tagging status")
+
+	// Delete tags.
+	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket+"?tagging", nil)
+	require.NoError(t, err, "creating DELETE bucket tagging request")
+	delResp, err := client.Do(delReq)
+	require.NoError(t, err, "DELETE bucket tagging error")
+	delResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE bucket tagging status")
+
+	// Subsequent GET should return NoSuchTagSet.
+	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "?tagging")
+	require.NoError(t, err, "GET bucket tagging error after delete")
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET bucket tagging status after delete")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet after delete")
+}
+
+func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/nonexistent-bucket?tagging", nil)
+	require.NoError(t, err, "creating DELETE bucket tagging request")
+
+	delResp, err := client.Do(delReq)
+	require.NoError(t, err, "DELETE bucket tagging error")
+	defer delResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, delResp.StatusCode, "DELETE bucket tagging status for missing bucket")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(delResp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
+}
+
 func TestCopyObjectWithinBucket(t *testing.T) {
 	t.Parallel()
 

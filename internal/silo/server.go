@@ -415,7 +415,7 @@ func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, buck
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "DeleteBucketTagging")
+		s.handleDeleteBucketTagging(w, r, bucket)
 	case q.Has("encryption"):
 		s.writeNotImplemented(w, r, "DeleteBucketEncryption")
 	case q.Has("cors"):
@@ -944,6 +944,28 @@ func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, 
 	if err := writeXMLResponse(w, tagging); err != nil {
 		slog.Error("Encode bucket tagging XML", "bucket", bucket, "err", err)
 	}
+}
+
+// handleDeleteBucketTagging implements DELETE /bucket?tagging to remove all
+// tags associated with a bucket.
+func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
+		slog.Error("Delete bucket tagging lookup", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
+		slog.Error("Delete bucket tags", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleListBuckets implements GET / to list all buckets.
