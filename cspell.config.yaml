@@ -11,5 +11,6 @@ words:
   - mattn
   - pmezard
   - stretchr
+  - templ
 ignoreWords: []
 import: []

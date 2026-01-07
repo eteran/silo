@@ -1,0 +1,37 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    # Default linters
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Extra
+    - asciicheck
+    - bodyclose
+    - gocheckcompilerdirectives
+    - noctx
+    - perfsprint
+    - prealloc
+    - unconvert
+    - testifylint
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Things commonly used in a defer statement
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*os.File).Close
+        - (io/fs.File).Close
+        - (io.ReadCloser).Close
+        - os.Remove
+        - os.RemoveAll
+
+    govet:
+      enable:
+        - nilness
