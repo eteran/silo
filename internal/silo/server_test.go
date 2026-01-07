@@ -285,7 +285,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// PUT bucket tagging.
-	tagging := BucketTagging{
+	tagging := Tagging{
 		XMLNS: s3XMLNamespace,
 		TagSet: []Tag{
 			{Key: "env", Value: "dev"},
@@ -310,7 +310,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET bucket tagging status")
 
-	var got BucketTagging
+	var got Tagging
 	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&got), "decoding BucketTagging")
 	require.Len(t, got.TagSet, 2, "expected two tags")
 
@@ -375,7 +375,7 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	_, httpSrv := newTestServer(t)
 	client := httpSrv.Client()
 
-	tagging := BucketTagging{
+	tagging := Tagging{
 		XMLNS:  s3XMLNamespace,
 		TagSet: []Tag{{Key: "env", Value: "dev"}},
 	}
@@ -398,6 +398,167 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
 }
 
+func TestPutAndGetObjectTagging(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "obj-tag-bucket"
+	key := "obj.txt"
+	body := []byte("payload")
+
+	// PUT object (auto-creates bucket).
+	putObjReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT object request")
+	putObjResp, err := client.Do(putObjReq)
+	require.NoError(t, err, "PUT object error")
+	putObjResp.Body.Close()
+	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
+
+	// PUT object tagging.
+	tagging := Tagging{
+		XMLNS: s3XMLNamespace,
+		TagSet: []Tag{
+			{Key: "env", Value: "dev"},
+			{Key: "owner", Value: "bob"},
+		},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
+
+	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	require.NoError(t, err, "creating PUT object tagging request")
+	putReq.Header.Set("Content-Type", "application/xml")
+
+	putResp, err := client.Do(putReq)
+	require.NoError(t, err, "PUT object tagging error")
+	putResp.Body.Close()
+	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object tagging status")
+
+	// GET object tagging and verify round-trip.
+	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key + "?tagging")
+	require.NoError(t, err, "GET object tagging error")
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET object tagging status")
+
+	var got Tagging
+	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&got), "decoding object BucketTagging")
+	require.Len(t, got.TagSet, 2, "expected two object tags")
+
+	values := map[string]string{}
+	for _, tag := range got.TagSet {
+		values[tag.Key] = tag.Value
+	}
+	require.Equal(t, "dev", values["env"], "env tag value")
+	require.Equal(t, "bob", values["owner"], "owner tag value")
+}
+
+func TestGetObjectTaggingNoSuchKey(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	resp, err := client.Get(httpSrv.URL + "/bucket/missing-key?tagging")
+	require.NoError(t, err, "GET object tagging error")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET object tagging status for missing key")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchKey", s3Err.Code, "expected NoSuchKey error code")
+}
+
+func TestGetObjectTaggingNoTagSet(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "obj-empty-tag-bucket"
+	key := "obj.txt"
+	body := []byte("payload")
+
+	// PUT object (auto-creates bucket) without tags.
+	putObjReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT object request")
+	putObjResp, err := client.Do(putObjReq)
+	require.NoError(t, err, "PUT object error")
+	putObjResp.Body.Close()
+	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
+
+	// GET tagging should return NoSuchTagSet.
+	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key + "?tagging")
+	require.NoError(t, err, "GET object tagging error")
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET object tagging status for empty tag set")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet error code")
+}
+
+func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := newTestServer(t)
+	client := httpSrv.Client()
+
+	bucket := "obj-delete-tag-bucket"
+	key := "obj.txt"
+	body := []byte("payload")
+
+	// PUT object (auto-creates bucket).
+	putObjReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
+	require.NoError(t, err, "creating PUT object request")
+	putObjResp, err := client.Do(putObjReq)
+	require.NoError(t, err, "PUT object error")
+	putObjResp.Body.Close()
+	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
+
+	// Add tags.
+	tagging := Tagging{
+		XMLNS:  s3XMLNamespace,
+		TagSet: []Tag{{Key: "env", Value: "prod"}},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
+
+	putReq, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
+	require.NoError(t, err, "creating PUT object tagging request")
+	putReq.Header.Set("Content-Type", "application/xml")
+
+	putResp, err := client.Do(putReq)
+	require.NoError(t, err, "PUT object tagging error")
+	putResp.Body.Close()
+	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object tagging status")
+
+	// Delete tags.
+	delReq, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", nil)
+	require.NoError(t, err, "creating DELETE object tagging request")
+	delResp, err := client.Do(delReq)
+	require.NoError(t, err, "DELETE object tagging error")
+	delResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE object tagging status")
+
+	// Subsequent GET should return NoSuchTagSet.
+	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key + "?tagging")
+	require.NoError(t, err, "GET object tagging error after delete")
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET object tagging status after delete")
+
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
+	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet after delete")
+}
+
 func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	t.Parallel()
 
@@ -415,7 +576,7 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Add tags.
-	tagging := BucketTagging{
+	tagging := Tagging{
 		XMLNS: s3XMLNamespace,
 		TagSet: []Tag{
 			{Key: "env", Value: "prod"},
@@ -982,11 +1143,6 @@ func TestNotImplementedRoutes(t *testing.T) {
 			name:   "UploadPart",
 			method: http.MethodPut,
 			path:   "/bucket/object?uploadId=123&partNumber=1",
-		},
-		{
-			name:   "GetObjectTagging",
-			method: http.MethodGet,
-			path:   "/bucket/object?tagging",
 		},
 		{
 			name:   "ListMultipartUploads",

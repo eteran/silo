@@ -84,8 +84,8 @@ type Tag struct {
 	Value string `xml:"Value"`
 }
 
-// BucketTagging represents the XML payload for bucket tagging APIs.
-type BucketTagging struct {
+// Tagging represents the XML payload for bucket tagging APIs.
+type Tagging struct {
 	XMLName xml.Name `xml:"Tagging"`
 	XMLNS   string   `xml:"xmlns,attr,omitempty"`
 	TagSet  []Tag    `xml:"TagSet>Tag"`

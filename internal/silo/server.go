@@ -134,13 +134,20 @@ func (s *Server) bucketExists(bucket string) (bool, error) {
 }
 
 // ensureBucket makes sure the given bucket exists, creating it if necessary.
-func (s *Server) ensureBucket(name string) (sql.Result, error) {
+// It returns true if the bucket was created, false if it already existed.
+func (s *Server) ensureBucket(name string) (bool, error) {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO buckets(name, created_at, modified_at) VALUES(?, ?, ?)`,
 		name, now, now,
 	)
-	return res, err
+
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := res.RowsAffected()
+	return rows > 0, err
 }
 
 // writeNotImplemented is a helper for stubbing unsupported S3 operations.
@@ -510,7 +517,7 @@ func (s *Server) handleObjectGet(w http.ResponseWriter, r *http.Request, bucket 
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "GetObjectTagging")
+		s.handleGetObjectTagging(w, r, bucket, key)
 	case q.Has("attributes"):
 		s.writeNotImplemented(w, r, "GetObjectAttributes")
 	case q.Has("uploadId"):
@@ -532,7 +539,7 @@ func (s *Server) handleObjectDelete(w http.ResponseWriter, r *http.Request, buck
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "DeleteObjectTagging")
+		s.handleDeleteObjectTagging(w, r, bucket, key)
 	case q.Has("uploadId"):
 		s.writeNotImplemented(w, r, "AbortMultipartUpload")
 	default:
@@ -563,7 +570,7 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 
 	if q.Has("tagging") {
-		s.writeNotImplemented(w, r, "PutObjectTagging")
+		s.handlePutObjectTagging(w, r, bucket, key)
 		return
 	}
 
@@ -754,6 +761,147 @@ func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, buck
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePutObjectTagging implements PUT /bucket/key?tagging to replace the
+// complete set of tags associated with an object. It treats tags as a
+// separate metadata resource and does not change the object's modified_at
+// (which reflects payload changes).
+func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	ctx := r.Context()
+
+	// Ensure object exists.
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
+			return
+		}
+		slog.Error("Put object tagging lookup", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	defer r.Body.Close()
+	var tagging Tagging
+	if err := xml.NewDecoder(r.Body).Decode(&tagging); err != nil {
+		slog.Error("Decode object tagging XML", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	if len(tagging.TagSet) > 50 {
+		writeS3Error(w, "InvalidRequest", "The TagSet cannot contain more than 50 tags.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	if err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM object_tags WHERE bucket = ? AND key = ?`, bucket, key); err != nil {
+			slog.Error("Delete existing object tags", "bucket", bucket, "key", key, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return fmt.Errorf("error deleting existing object tags %w", err)
+		}
+
+		for _, tag := range tagging.TagSet {
+			if tag.Key == "" {
+				writeS3Error(w, "InvalidTag", "The TagKey you have provided is invalid.", r.URL.Path, http.StatusBadRequest)
+				return fmt.Errorf("invalid object tag key `%s`", tag.Key)
+			}
+
+			if strings.HasPrefix(strings.ToLower(tag.Key), "aws:") {
+				writeS3Error(w, "InvalidTag", "System tags prefixed with 'aws:' are reserved and cannot be modified.", r.URL.Path, http.StatusBadRequest)
+				return fmt.Errorf("reserved object tag key `%s`", tag.Key)
+			}
+
+			if _, err := tx.Exec(`INSERT INTO object_tags(bucket, key, tag_key, tag_value) VALUES(?, ?, ?, ?)`, bucket, key, tag.Key, tag.Value); err != nil {
+				slog.Error("Insert object tag", "bucket", bucket, "key", key, "tag_key", tag.Key, "err", err)
+				writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+				return fmt.Errorf("error inserting object tag `%s` %w", tag.Key, err)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		slog.Error("Put object tagging transaction", "bucket", bucket, "key", key, "err", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGetObjectTagging implements GET /bucket/key?tagging to retrieve the
+// current set of tags associated with an object.
+func (s *Server) handleGetObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	// Ensure object exists.
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
+			return
+		}
+		slog.Error("Get object tagging lookup", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := s.db.Query(`SELECT tag_key, tag_value FROM object_tags WHERE bucket = ? AND key = ? ORDER BY tag_key`, bucket, key)
+	if err != nil {
+		slog.Error("Query object tags", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	tagging := Tagging{XMLNS: s3XMLNamespace}
+	for rows.Next() {
+		var tag Tag
+		if err := rows.Scan(&tag.Key, &tag.Value); err != nil {
+			slog.Error("Scan object tag", "bucket", bucket, "key", key, "err", err)
+			continue
+		}
+		tagging.TagSet = append(tagging.TagSet, tag)
+	}
+
+	if len(tagging.TagSet) == 0 {
+		writeS3Error(w, "NoSuchTagSet", "The TagSet does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	if err := writeXMLResponse(w, tagging); err != nil {
+		slog.Error("Encode object tagging XML", "bucket", bucket, "key", key, "err", err)
+	}
+}
+
+// handleDeleteObjectTagging implements DELETE /bucket/key?tagging to remove
+// all tags associated with an object.
+func (s *Server) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	ctx := r.Context()
+	// Ensure object exists.
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
+			return
+		}
+		slog.Error("Delete object tagging lookup", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	if err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM object_tags WHERE bucket = ? AND key = ?`, bucket, key); err != nil {
+			slog.Error("Delete object tags", "bucket", bucket, "key", key, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return fmt.Errorf("error deleting object tags %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		slog.Error("Delete object tagging transaction", "bucket", bucket, "key", key, "err", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	var (
 		hashHex     string
@@ -816,17 +964,13 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket 
 // handleCreateBucket implements PUT /bucket to create a new bucket.
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
 
-	res, err := s.ensureBucket(bucket)
-	if err != nil {
+	if created, err := s.ensureBucket(bucket); err != nil {
 		slog.Error("Create bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
-	}
-
-	rows, err := res.RowsAffected()
-	if err == nil && rows == 0 {
-		// Bucket already existed; S3 returns 409 BucketAlreadyOwnedByYou.
-		writeS3Error(w, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.", r.URL.Path, http.StatusConflict)
+	} else if !created {
+		// Bucket already existed; S3 returns 409 BucketAlreadyExists.
+		writeS3Error(w, "BucketAlreadyExists", "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.", r.URL.Path, http.StatusConflict)
 		return
 	}
 
@@ -873,7 +1017,7 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 	}
 
 	defer r.Body.Close()
-	var tagging BucketTagging
+	var tagging Tagging
 	if err := xml.NewDecoder(r.Body).Decode(&tagging); err != nil {
 		slog.Error("Decode bucket tagging XML", "bucket", bucket, "err", err)
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", r.URL.Path, http.StatusBadRequest)
@@ -950,7 +1094,7 @@ func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, 
 	}
 	defer rows.Close()
 
-	tagging := BucketTagging{XMLNS: s3XMLNamespace}
+	tagging := Tagging{XMLNS: s3XMLNamespace}
 	for rows.Next() {
 		var tag Tag
 		if err := rows.Scan(&tag.Key, &tag.Value); err != nil {

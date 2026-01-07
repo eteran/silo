@@ -44,3 +44,16 @@ CREATE TABLE IF NOT EXISTS bucket_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bucket_tags_bucket ON bucket_tags(bucket);
+
+-- Object tags store key/value metadata associated with individual objects.
+-- Tags are scoped to a (bucket, key) pair and uniquely identified by key.
+CREATE TABLE IF NOT EXISTS object_tags (
+    bucket TEXT NOT NULL,
+    key TEXT NOT NULL,
+    tag_key TEXT NOT NULL,
+    tag_value TEXT NOT NULL,
+    PRIMARY KEY (bucket, key, tag_key),
+    FOREIGN KEY(bucket, key) REFERENCES objects(bucket, key) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_object_tags_bucket_key ON object_tags(bucket, key);
