@@ -2,6 +2,7 @@ package silo
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
@@ -101,6 +102,25 @@ func NewServer(cfg Config) (*Server, error) {
 // Close closes any resources held by the Server.
 func (s *Server) Close() error {
 	return s.db.Close()
+}
+
+// WithTransaction runs a function within a database transaction.
+func WithTransaction(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := fn(tx); err != nil {
+		return fmt.Errorf("error executing transaction: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing transaction: %w", err)
+	}
+
+	return nil
 }
 
 // bucketExists checks whether a bucket with the given name exists.
@@ -490,13 +510,10 @@ func (s *Server) handleObjectGet(w http.ResponseWriter, r *http.Request, bucket 
 	switch {
 	case q.Has("tagging"):
 		s.writeNotImplemented(w, r, "GetObjectTagging")
-		return
 	case q.Has("attributes"):
 		s.writeNotImplemented(w, r, "GetObjectAttributes")
-		return
 	case q.Has("uploadId"):
 		s.writeNotImplemented(w, r, "ListParts")
-		return
 	default:
 		s.handleGetObject(w, r, bucket, key)
 	}
@@ -515,22 +532,11 @@ func (s *Server) handleObjectDelete(w http.ResponseWriter, r *http.Request, buck
 	switch {
 	case q.Has("tagging"):
 		s.writeNotImplemented(w, r, "DeleteObjectTagging")
-		return
 	case q.Has("uploadId"):
 		s.writeNotImplemented(w, r, "AbortMultipartUpload")
-		return
+	default:
+		s.handleDeleteObject(w, r, bucket, key)
 	}
-
-	_, err := s.db.Exec(`DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
-	if err != nil {
-		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	// Note: we intentionally do not garbage-collect unreferenced payload
-	// files yet. That can be added later based on hash reference counts.
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleObjectPut implements PUT /bucket/key to store an object.
@@ -733,6 +739,19 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 
 // ------ Individual API HTTP handlers ------
 
+func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	_, err := s.db.Exec(`DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
+	if err != nil {
+		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	// Note: we intentionally do not garbage-collect unreferenced payload
+	// files yet. That can be added later based on hash reference counts.
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	var (
 		hashHex     string
@@ -838,6 +857,9 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 // handlePutBucketTagging implements PUT /bucket?tagging to replace the
 // complete set of tags associated with a bucket.
 func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
+
+	ctx := r.Context()
+
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(bucket); err != nil {
 		slog.Error("Put bucket tagging lookup", "bucket", bucket, "err", err)
@@ -861,44 +883,36 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		slog.Error("Begin tx for bucket tagging", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			slog.Debug("Rollback tx for bucket tagging", "bucket", bucket, "err", err)
-		}
-	}()
-
-	if _, err := tx.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
-		slog.Error("Delete existing bucket tags", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	for _, tag := range tagging.TagSet {
-		if tag.Key == "" {
-			writeS3Error(w, "InvalidTag", "The TagKey you have provided is invalid.", r.URL.Path, http.StatusBadRequest)
-			return
-		}
-		if strings.HasPrefix(strings.ToLower(tag.Key), "aws:") {
-			writeS3Error(w, "InvalidTag", "System tags prefixed with 'aws:' are reserved and cannot be modified.", r.URL.Path, http.StatusBadRequest)
-			return
-		}
-
-		if _, err := tx.Exec(`INSERT INTO bucket_tags(bucket, key, value) VALUES(?, ?, ?)`, bucket, tag.Key, tag.Value); err != nil {
-			slog.Error("Insert bucket tag", "bucket", bucket, "key", tag.Key, "err", err)
+	err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
+			slog.Error("Delete existing bucket tags", "bucket", bucket, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-			return
+			return fmt.Errorf("error deleting existing tag %w", err)
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		slog.Error("Commit bucket tagging tx", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		for _, tag := range tagging.TagSet {
+			if tag.Key == "" {
+				writeS3Error(w, "InvalidTag", "The TagKey you have provided is invalid.", r.URL.Path, http.StatusBadRequest)
+				return fmt.Errorf("invalid tag key `%s`", tag.Key)
+			}
+
+			if strings.HasPrefix(strings.ToLower(tag.Key), "aws:") {
+				writeS3Error(w, "InvalidTag", "System tags prefixed with 'aws:' are reserved and cannot be modified.", r.URL.Path, http.StatusBadRequest)
+				return fmt.Errorf("reserved tag key `%s`", tag.Key)
+			}
+
+			if _, err := tx.Exec(`INSERT INTO bucket_tags(bucket, key, value) VALUES(?, ?, ?)`, bucket, tag.Key, tag.Value); err != nil {
+				slog.Error("Insert bucket tag", "bucket", bucket, "key", tag.Key, "err", err)
+				writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+				return fmt.Errorf("error inserting tag `%s` %w", tag.Key, err)
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		slog.Error("Put bucket tagging transaction", "bucket", bucket, "err", err)
 		return
 	}
 
