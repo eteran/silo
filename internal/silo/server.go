@@ -333,7 +333,7 @@ func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket 
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "PutBucketTagging")
+		s.handlePutBucketTagging(w, r, bucket)
 	case q.Has("versioning"):
 		s.writeNotImplemented(w, r, "PutBucketVersioning")
 	case q.Has("encryption"):
@@ -380,7 +380,7 @@ func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket 
 	case q.Has("location"):
 		s.handleGetBucketLocation(w, r, bucket)
 	case q.Has("tagging"):
-		s.writeNotImplemented(w, r, "GetBucketTagging")
+		s.handleGetBucketTagging(w, r, bucket)
 	case q.Has("versioning"):
 		s.writeNotImplemented(w, r, "GetBucketVersioning")
 	case q.Has("encryption"):
@@ -832,6 +832,117 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 
 	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode bucket location XML", "bucket", bucket, "err", err)
+	}
+}
+
+// handlePutBucketTagging implements PUT /bucket?tagging to replace the
+// complete set of tags associated with a bucket.
+func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
+		slog.Error("Put bucket tagging lookup", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	defer r.Body.Close()
+	var tagging BucketTagging
+	if err := xml.NewDecoder(r.Body).Decode(&tagging); err != nil {
+		slog.Error("Decode bucket tagging XML", "bucket", bucket, "err", err)
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	if len(tagging.TagSet) > 50 {
+		writeS3Error(w, "InvalidRequest", "The TagSet cannot contain more than 50 tags.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		slog.Error("Begin tx for bucket tagging", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			slog.Debug("Rollback tx for bucket tagging", "bucket", bucket, "err", err)
+		}
+	}()
+
+	if _, err := tx.Exec(`DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
+		slog.Error("Delete existing bucket tags", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	for _, tag := range tagging.TagSet {
+		if tag.Key == "" {
+			writeS3Error(w, "InvalidTag", "The TagKey you have provided is invalid.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(tag.Key), "aws:") {
+			writeS3Error(w, "InvalidTag", "System tags prefixed with 'aws:' are reserved and cannot be modified.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		if _, err := tx.Exec(`INSERT INTO bucket_tags(bucket, key, value) VALUES(?, ?, ?)`, bucket, tag.Key, tag.Value); err != nil {
+			slog.Error("Insert bucket tag", "bucket", bucket, "key", tag.Key, "err", err)
+			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		slog.Error("Commit bucket tagging tx", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGetBucketTagging implements GET /bucket?tagging to retrieve the
+// current set of tags associated with a bucket.
+func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
+	// Ensure bucket exists.
+	if exists, err := s.bucketExists(bucket); err != nil {
+		slog.Error("Get bucket tagging lookup", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	rows, err := s.db.Query(`SELECT key, value FROM bucket_tags WHERE bucket = ? ORDER BY key`, bucket)
+	if err != nil {
+		slog.Error("Query bucket tags", "bucket", bucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	tagging := BucketTagging{XMLNS: s3XMLNamespace}
+	for rows.Next() {
+		var tag Tag
+		if err := rows.Scan(&tag.Key, &tag.Value); err != nil {
+			slog.Error("Scan bucket tag", "bucket", bucket, "err", err)
+			continue
+		}
+		tagging.TagSet = append(tagging.TagSet, tag)
+	}
+
+	if len(tagging.TagSet) == 0 {
+		writeS3Error(w, "NoSuchTagSet", "The TagSet does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	if err := writeXMLResponse(w, tagging); err != nil {
+		slog.Error("Encode bucket tagging XML", "bucket", bucket, "err", err)
 	}
 }
 

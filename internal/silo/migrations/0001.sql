@@ -30,3 +30,15 @@ CREATE TABLE IF NOT EXISTS objects (
 -- prefix-based listings (bucket + parent + key).
 CREATE INDEX IF NOT EXISTS idx_objects_hash ON objects(hash);
 CREATE INDEX IF NOT EXISTS idx_objects_parent ON objects(bucket, parent, key);
+
+-- Bucket tags store simple key/value metadata associated with buckets.
+-- Tags are scoped to a bucket and uniquely identified by their key.
+CREATE TABLE IF NOT EXISTS bucket_tags (
+    bucket TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (bucket, key),
+    FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bucket_tags_bucket ON bucket_tags(bucket);

@@ -77,3 +77,16 @@ type CopyObjectResult struct {
 	LastModified string   `xml:"LastModified"`
 	ETag         string   `xml:"ETag"`
 }
+
+// Tag represents a single key/value tag entry.
+type Tag struct {
+	Key   string `xml:"Key"`
+	Value string `xml:"Value"`
+}
+
+// BucketTagging represents the XML payload for bucket tagging APIs.
+type BucketTagging struct {
+	XMLName xml.Name `xml:"Tagging"`
+	XMLNS   string   `xml:"xmlns,attr,omitempty"`
+	TagSet  []Tag    `xml:"TagSet>Tag"`
+}
