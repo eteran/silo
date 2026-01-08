@@ -31,7 +31,7 @@ templ BucketsContents(buckets []Bucket) {
 			<tbody>
 			for _, b := range buckets {
 				<tr>
-				<td><a href={fmt.Sprintf("/bucket/%s", b.Name)}>{b.Name}</a></td>
+				<td><a href={fmt.Sprintf("/bucket/%s", templ.EscapeString(b.Name))}>{b.Name}</a></td>
 				<td>{b.CreationDate}</td>
 				</tr>
 			}
