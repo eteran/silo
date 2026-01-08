@@ -1,3 +1,4 @@
 *.sqlite
 data/
 __debug_bin*
+*_templ.go
