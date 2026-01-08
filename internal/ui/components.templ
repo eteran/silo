@@ -1,0 +1,92 @@
+package ui
+
+import "fmt"
+
+// Bucket represents a single S3 bucket for display.
+type Bucket struct {
+	Name         string
+	CreationDate string
+}
+
+// Object represents a single object within a bucket for display.
+type Object struct {
+	Key          string
+	Size         int64
+	LastModified string
+}
+
+templ BucketsContents(buckets []Bucket) {
+	<section>
+		<header>
+			<h1>Silo Buckets</h1>
+			<p>Browse buckets and objects via the S3-compatible API.</p>
+		</header>
+		if len(buckets) == 0 {
+			<p>No buckets found.</p>
+		} else {
+			<table>
+			<thead>
+				<tr><th>Name</th><th>Created</th></tr>
+			</thead>
+			<tbody>
+			for _, b := range buckets {
+				<tr>
+				<td><a href={fmt.Sprintf("/bucket/%s", b.Name)}>{b.Name}</a></td>
+				<td>{b.CreationDate}</td>
+				</tr>
+			}
+			</tbody>
+			</table>
+	    }
+	</section>
+}
+
+// ObjectsPage renders the list of objects for a single bucket.
+templ ObjectsContents(bucket string, objects []Object) {
+    <section>
+    <header>
+        <h1>Bucket: {bucket}</h1>
+        <p><a href="/">&larr; Back to buckets</a></p>
+    </header>
+    if len(objects) == 0 {
+        <p>No objects in this bucket.</p>
+    } else {
+        <table>
+        <thead><tr><th>Key</th><th>Size (bytes)</th><th>Last Modified</th></tr></thead>
+        <tbody>
+		for _, o := range objects {
+            <tr><td>{o.Key}</td><td>{o.Size}</td><td>{o.LastModified}</td></tr>
+		}
+        </tbody></table>
+    }
+
+    </section>
+
+}
+
+templ BucketsPage(buckets []Bucket) {
+	@Layout("Silo Browser - Buckets", BucketsContents(buckets))
+}
+
+templ ObjectsPage(bucket string, objects []Object) {
+	@Layout("Silo Browser - {bucket}", ObjectsContents(bucket, objects))
+}
+
+// Layout renders a full HTML page with a title and body component.
+templ Layout(title string, body templ.Component) {
+	<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{title}</title>
+        <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+        <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-srD8tA5lZgUlAXb/DvBy1UG775H8sG8vyXK3w63U1zrtRXkuTDIaTzGvX2UksI0M" crossorigin="anonymous"></script>
+    </head>
+    <body hx-boost="true">
+        <main class="container">
+        @body
+        </main>
+    </body>
+    </html>
+}
