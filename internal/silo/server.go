@@ -1335,6 +1335,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 
 	q := r.URL.Query()
 	prefix := q.Get("prefix")
+	delimiter := q.Get("delimiter")
 	maxKeys := 1000
 	if raw := q.Get("max-keys"); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
@@ -1342,7 +1343,9 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 		}
 	}
 
-	// Fetch up to maxKeys+1 to determine truncation.
+	// Fetch up to maxKeys+1 to determine truncation. We may emit fewer
+	// entries than rows when using a delimiter (due to CommonPrefixes),
+	// but this keeps the query bounded.
 	args := []any{bucket}
 	query := `SELECT key, hash, size, modified_at FROM objects WHERE bucket = ?`
 	if prefix != "" {
@@ -1360,7 +1363,14 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 	}
 	defer rows.Close()
 
-	var summaries []ObjectSummary
+	var (
+		summaries      []ObjectSummary
+		commonPrefixes []CommonPrefix
+		seenPrefixes   = make(map[string]struct{})
+		isTruncated    bool
+		entryCount     int
+	)
+
 	for rows.Next() {
 		var (
 			key        string
@@ -1372,28 +1382,72 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 			slog.Error("Scan object", "bucket", bucket, "err", err)
 			continue
 		}
-		summaries = append(summaries, ObjectSummary{
-			Key:          key,
-			LastModified: modifiedAt.UTC().Format(time.RFC3339),
-			ETag:         createETag(hashHex),
-			Size:         size,
-			StorageClass: "STANDARD",
-		})
-	}
 
-	isTruncated := false
-	if len(summaries) > maxKeys {
-		isTruncated = true
-		summaries = summaries[:maxKeys]
+		// If no delimiter is requested, return a flat listing.
+		if delimiter == "" {
+			if entryCount < maxKeys {
+				summaries = append(summaries, ObjectSummary{
+					Key:          key,
+					LastModified: modifiedAt.UTC().Format(time.RFC3339),
+					ETag:         createETag(hashHex),
+					Size:         size,
+					StorageClass: "STANDARD",
+				})
+				entryCount++
+			} else {
+				isTruncated = true
+				break
+			}
+			continue
+		}
+
+		// Delimited listing: group keys into CommonPrefixes for the first
+		// path segment after the prefix. Objects directly under the prefix
+		// are returned as Contents.
+		rel := strings.TrimPrefix(key, prefix)
+		idx := strings.Index(rel, delimiter)
+		if idx == -1 {
+			// No further delimiter; treat as an object at this level.
+			if entryCount < maxKeys {
+				summaries = append(summaries, ObjectSummary{
+					Key:          key,
+					LastModified: modifiedAt.UTC().Format(time.RFC3339),
+					ETag:         createETag(hashHex),
+					Size:         size,
+					StorageClass: "STANDARD",
+				})
+				entryCount++
+			} else {
+				isTruncated = true
+				break
+			}
+			continue
+		}
+
+		// There is another delimiter; emit or reuse a CommonPrefix.
+		cp := prefix + rel[:idx+1]
+		if _, ok := seenPrefixes[cp]; ok {
+			continue
+		}
+		if entryCount < maxKeys {
+			seenPrefixes[cp] = struct{}{}
+			commonPrefixes = append(commonPrefixes, CommonPrefix{Prefix: cp})
+			entryCount++
+		} else {
+			isTruncated = true
+			break
+		}
 	}
 
 	resp := ListBucketResult{
-		XMLNS:       s3XMLNamespace,
-		Name:        bucket,
-		Prefix:      prefix,
-		MaxKeys:     maxKeys,
-		IsTruncated: isTruncated,
-		Contents:    summaries,
+		XMLNS:          s3XMLNamespace,
+		Name:           bucket,
+		Prefix:         prefix,
+		Delimiter:      delimiter,
+		MaxKeys:        maxKeys,
+		IsTruncated:    isTruncated,
+		Contents:       summaries,
+		CommonPrefixes: commonPrefixes,
 	}
 
 	if err := writeXMLResponse(w, resp); err != nil {
@@ -1417,6 +1471,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 
 	q := r.URL.Query()
 	prefix := q.Get("prefix")
+	delimiter := q.Get("delimiter")
 	continuationToken := q.Get("continuation-token")
 	startAfter := ""
 	if continuationToken == "" {
@@ -1430,7 +1485,8 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		}
 	}
 
-	// Fetch up to maxKeys+1 to determine truncation.
+	// Fetch up to maxKeys+1 to determine truncation. As with v1, we may
+	// emit fewer entries than rows when using a delimiter.
 	args := []any{bucket}
 	query := `SELECT key, hash, size, modified_at FROM objects WHERE bucket = ?`
 	if prefix != "" {
@@ -1455,7 +1511,15 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	}
 	defer rows.Close()
 
-	var summaries []ObjectSummary
+	var (
+		summaries      []ObjectSummary
+		commonPrefixes []CommonPrefix
+		seenPrefixes   = make(map[string]struct{})
+		isTruncated    bool
+		entryCount     int
+		lastScannedKey string
+	)
+
 	for rows.Next() {
 		var (
 			key        string
@@ -1467,31 +1531,81 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 			slog.Error("Scan object (v2)", "bucket", bucket, "err", err)
 			continue
 		}
-		summaries = append(summaries, ObjectSummary{
-			Key:          key,
-			LastModified: modifiedAt.UTC().Format(time.RFC3339),
-			ETag:         createETag(hashHex),
-			Size:         size,
-			StorageClass: "STANDARD",
-		})
+		lastScannedKey = key
+
+		// Flat (recursive-style) listing when no delimiter is provided.
+		if delimiter == "" {
+			if entryCount < maxKeys {
+				summaries = append(summaries, ObjectSummary{
+					Key:          key,
+					LastModified: modifiedAt.UTC().Format(time.RFC3339),
+					ETag:         createETag(hashHex),
+					Size:         size,
+					StorageClass: "STANDARD",
+				})
+				entryCount++
+			} else {
+				isTruncated = true
+				break
+			}
+			continue
+		}
+
+		// Delimited listing: group by first path segment after prefix.
+		rel := strings.TrimPrefix(key, prefix)
+		idx := strings.Index(rel, delimiter)
+		if idx == -1 {
+			if entryCount < maxKeys {
+				summaries = append(summaries, ObjectSummary{
+					Key:          key,
+					LastModified: modifiedAt.UTC().Format(time.RFC3339),
+					ETag:         createETag(hashHex),
+					Size:         size,
+					StorageClass: "STANDARD",
+				})
+				entryCount++
+			} else {
+				isTruncated = true
+				break
+			}
+			continue
+		}
+
+		cp := prefix + rel[:idx+1]
+		if _, ok := seenPrefixes[cp]; ok {
+			continue
+		}
+		if entryCount < maxKeys {
+			seenPrefixes[cp] = struct{}{}
+			commonPrefixes = append(commonPrefixes, CommonPrefix{Prefix: cp})
+			entryCount++
+		} else {
+			isTruncated = true
+			break
+		}
 	}
 
-	isTruncated := false
-	if len(summaries) > maxKeys {
-		isTruncated = true
-		summaries = summaries[:maxKeys]
-	}
-
-	keyCount := len(summaries)
+	keyCount := entryCount
 	nextContinuationToken := ""
-	if isTruncated && keyCount > 0 {
-		nextContinuationToken = summaries[keyCount-1].Key
+	if isTruncated {
+		// When there is no delimiter (or no common prefixes), follow the
+		// usual S3/ListObjectsV2 behavior of using the last returned object
+		// key as the continuation token so clients resume after the last
+		// visible entry. When using a delimiter and returning common
+		// prefixes, fall back to the last scanned key, which is sufficient
+		// for forward progress and compatible with minio-go.
+		if (delimiter == "" || len(commonPrefixes) == 0) && len(summaries) > 0 {
+			nextContinuationToken = summaries[len(summaries)-1].Key
+		} else if lastScannedKey != "" {
+			nextContinuationToken = lastScannedKey
+		}
 	}
 
 	resp := ListBucketResultV2{
 		XMLNS:                 s3XMLNamespace,
 		Name:                  bucket,
 		Prefix:                prefix,
+		Delimiter:             delimiter,
 		KeyCount:              keyCount,
 		MaxKeys:               maxKeys,
 		IsTruncated:           isTruncated,
@@ -1499,6 +1613,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		NextContinuationToken: nextContinuationToken,
 		StartAfter:            startAfter,
 		Contents:              summaries,
+		CommonPrefixes:        commonPrefixes,
 	}
 
 	if err := writeXMLResponse(w, resp); err != nil {

@@ -24,6 +24,82 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+type Server struct {
+	client *minio.Client
+}
+
+func (s *Server) Home(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	buckets, err := s.client.ListBuckets(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to list buckets: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	uiBuckets := make([]ui.Bucket, 0, len(buckets))
+	for _, b := range buckets {
+		uiBuckets = append(uiBuckets, ui.Bucket{
+			Name:         b.Name,
+			CreationDate: b.CreationDate.UTC().Format(time.RFC3339),
+		})
+	}
+
+	if err := ui.BucketsPage(uiBuckets).Render(ctx, w); err != nil {
+		http.Error(w, fmt.Sprintf("failed to render buckets page: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (s *Server) BucketContents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	bucket := r.PathValue("bucket")
+	if bucket == "" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	prefix := r.PathValue("key")
+
+	// Always fetch all buckets so the sidebar can be rendered.
+	buckets, err := s.client.ListBuckets(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to list buckets: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	uiBuckets := make([]ui.Bucket, 0, len(buckets))
+	for _, b := range buckets {
+		uiBuckets = append(uiBuckets, ui.Bucket{
+			Name:         b.Name,
+			CreationDate: b.CreationDate.UTC().Format(time.RFC3339),
+		})
+	}
+
+	opts := minio.ListObjectsOptions{
+		Recursive: false,
+		Prefix:    prefix,
+	}
+
+	var objects []ui.Object
+	for obj := range s.client.ListObjects(ctx, bucket, opts) {
+		if obj.Err != nil {
+			// Log and skip errors for individual objects.
+			slog.Error("ListObjects error", "bucket", bucket, "err", obj.Err)
+			continue
+		}
+		objects = append(objects, ui.Object{
+			Key:          obj.Key,
+			Size:         obj.Size,
+			LastModified: obj.LastModified.UTC().Format(time.RFC3339),
+		})
+	}
+
+	if err := ui.ObjectsPage(uiBuckets, bucket, objects).Render(ctx, w); err != nil {
+		http.Error(w, fmt.Sprintf("failed to render objects page: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
 func main() {
 
 	listen := flag.String("listen", getenv("SILO_UI_LISTEN", "9100"), "HTTP listen address (host:port or just port)")
@@ -54,62 +130,12 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Home: list buckets.
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		buckets, err := client.ListBuckets(ctx)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to list buckets: %v", err), http.StatusInternalServerError)
-			return
-		}
+	server := &Server{
+		client: client,
+	}
 
-		uiBuckets := make([]ui.Bucket, 0, len(buckets))
-		for _, b := range buckets {
-			uiBuckets = append(uiBuckets, ui.Bucket{
-				Name:         b.Name,
-				CreationDate: b.CreationDate.UTC().Format(time.RFC3339),
-			})
-		}
-
-		if err := ui.BucketsPage(uiBuckets).Render(ctx, w); err != nil {
-			http.Error(w, fmt.Sprintf("failed to render buckets page: %v", err), http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Bucket contents.
-	mux.Handle("/bucket/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		bucket := r.URL.Path[len("/bucket/"):]
-		if bucket == "" {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-
-		// List objects using minio-go (non-recursive by default).
-		opts := minio.ListObjectsOptions{
-			Recursive: true,
-		}
-
-		var objects []ui.Object
-		for obj := range client.ListObjects(ctx, bucket, opts) {
-			if obj.Err != nil {
-				// Log and skip errors for individual objects.
-				slog.Error("ListObjects error", "bucket", bucket, "err", obj.Err)
-				continue
-			}
-			objects = append(objects, ui.Object{
-				Key:          obj.Key,
-				Size:         obj.Size,
-				LastModified: obj.LastModified.UTC().Format(time.RFC3339),
-			})
-		}
-
-		if err := ui.ObjectsPage(bucket, objects).Render(ctx, w); err != nil {
-			http.Error(w, fmt.Sprintf("failed to render objects page: %v", err), http.StatusInternalServerError)
-			return
-		}
-	}))
+	mux.HandleFunc("/", server.Home)
+	mux.HandleFunc("/bucket/{bucket}/{key...}", server.BucketContents)
 
 	addr := *listen
 	if addr[0] == ':' {

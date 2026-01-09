@@ -22,15 +22,23 @@ type ListAllMyBucketsResult struct {
 	Buckets []ListAllMyBucketsEntry `xml:"Buckets>Bucket"`
 }
 
+// CommonPrefix represents a single common prefix entry in a ListBucketResult.
+// It is used to model "directories" when a delimiter such as "/" is used.
+type CommonPrefix struct {
+	Prefix string `xml:"Prefix"`
+}
+
 // ListBucketResult represents the XML response for the S3 ListObjects API.
 type ListBucketResult struct {
-	XMLName     xml.Name        `xml:"ListBucketResult"`
-	XMLNS       string          `xml:"xmlns,attr"`
-	Name        string          `xml:"Name"`
-	Prefix      string          `xml:"Prefix"`
-	MaxKeys     int             `xml:"MaxKeys"`
-	IsTruncated bool            `xml:"IsTruncated"`
-	Contents    []ObjectSummary `xml:"Contents"`
+	XMLName        xml.Name        `xml:"ListBucketResult"`
+	XMLNS          string          `xml:"xmlns,attr"`
+	Name           string          `xml:"Name"`
+	Prefix         string          `xml:"Prefix"`
+	Delimiter      string          `xml:"Delimiter,omitempty"`
+	MaxKeys        int             `xml:"MaxKeys"`
+	IsTruncated    bool            `xml:"IsTruncated"`
+	Contents       []ObjectSummary `xml:"Contents"`
+	CommonPrefixes []CommonPrefix  `xml:"CommonPrefixes,omitempty"`
 }
 
 // ListBucketResultV2 represents the XML response for the S3 ListObjectsV2
@@ -40,6 +48,7 @@ type ListBucketResultV2 struct {
 	XMLNS                 string          `xml:"xmlns,attr"`
 	Name                  string          `xml:"Name"`
 	Prefix                string          `xml:"Prefix"`
+	Delimiter             string          `xml:"Delimiter,omitempty"`
 	KeyCount              int             `xml:"KeyCount"`
 	MaxKeys               int             `xml:"MaxKeys"`
 	IsTruncated           bool            `xml:"IsTruncated"`
@@ -47,6 +56,7 @@ type ListBucketResultV2 struct {
 	NextContinuationToken string          `xml:"NextContinuationToken,omitempty"`
 	StartAfter            string          `xml:"StartAfter,omitempty"`
 	Contents              []ObjectSummary `xml:"Contents"`
+	CommonPrefixes        []CommonPrefix  `xml:"CommonPrefixes,omitempty"`
 }
 
 // ObjectSummary is a single entry in a ListBucketResult.
