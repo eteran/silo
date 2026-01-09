@@ -47,9 +47,27 @@ templ ObjectsContents(bucket string, objects []Object) {
 		for _, o := range objects {
 			// It's a directory
 			if strings.HasSuffix(o.Key, "/") {
-            	<tr><td><a href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(o.Key))}>{templ.EscapeString(path.Base(o.Key))}</a></td><td>&nbsp;</td><td>&mdash;</td></tr>
+	            	<tr>
+						<td>
+							<a class="object-link" href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(o.Key))}>
+								<span class="object-icon object-icon-folder" aria-hidden="true">📁</span>
+								<span>{templ.EscapeString(path.Base(o.Key))}</span>
+							</a>
+						</td>
+						<td>&nbsp;</td>
+						<td>&mdash;</td>
+					</tr>
 			} else {
-				<tr><td>{templ.EscapeString(path.Base(o.Key))}</td><td>{o.Size}</td><td>{o.LastModified}</td></tr>
+					<tr>
+						<td>
+							<span class="object-link">
+								<span class="object-icon object-icon-file" aria-hidden="true">📄</span>
+								<span>{templ.EscapeString(path.Base(o.Key))}</span>
+							</span>
+						</td>
+						<td>{o.Size}</td>
+						<td>{o.LastModified}</td>
+					</tr>
 			}
 		}
         </tbody></table>
@@ -118,6 +136,20 @@ templ LayoutWithSidebar(title string, buckets []Bucket, selectedBucket string, b
 				padding: 1rem 1.5rem;
 				box-sizing: border-box;
 				overflow-x: auto;
+			}
+			.object-link {
+				display: inline-flex;
+				align-items: center;
+				gap: 0.35rem;
+			}
+			.object-icon {
+				font-size: 0.9em;
+			}
+			.object-icon-folder {
+				color: var(--pico-primary);
+			}
+			.object-icon-file {
+				color: var(--pico-muted-color);
 			}
 		</style>
 	</head>
