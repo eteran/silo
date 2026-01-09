@@ -32,11 +32,22 @@ templ BucketsContents() {
 	</section>
 }
 
-templ ObjectsContents(bucket string, objects []Object) {
+templ ObjectsContents(bucket string, prefix string, objects []Object) {
     <section>
     <header>
         <h1>Bucket: {bucket}</h1>
-        <p><a href="/">&larr; Back to home</a></p>
+		if prefix == "" {
+			<p><a href="/">&larr; Back to buckets</a></p>
+		} else {
+			{{ idx := strings.LastIndex(strings.TrimRight(prefix, "/"), "/") }}
+			if idx == -1 {
+				// No further parent segment, go back to the bucket root.
+				<p><a href={fmt.Sprintf("/bucket/%s", templ.EscapeString(bucket))}>&larr; Back to /</a></p>
+			} else {
+				{{ parent := prefix[:idx+1] }}
+				<p><a href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(parent))}>&larr; Back to /{templ.EscapeString(parent)}</a></p>
+			}
+		}
     </header>
     if len(objects) == 0 {
         <p>No objects in this bucket.</p>
@@ -80,8 +91,8 @@ templ BucketsPage(buckets []Bucket) {
 	@LayoutWithSidebar("Silo Browser - Buckets", buckets, "", BucketsContents())
 }
 
-templ ObjectsPage(buckets []Bucket, bucket string, objects []Object) {
-	@LayoutWithSidebar(fmt.Sprintf("Silo Browser - %s", templ.EscapeString(bucket)), buckets, bucket, ObjectsContents(bucket, objects))
+templ ObjectsPage(buckets []Bucket, bucket string, prefix string, objects []Object) {
+	@LayoutWithSidebar(fmt.Sprintf("Silo Browser - %s", templ.EscapeString(bucket)), buckets, bucket, ObjectsContents(bucket, prefix, objects))
 }
 
 // LayoutWithSidebar renders a full HTML page with a left-hand bucket

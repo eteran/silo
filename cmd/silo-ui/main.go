@@ -94,7 +94,7 @@ func (s *Server) BucketContents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if err := ui.ObjectsPage(uiBuckets, bucket, objects).Render(ctx, w); err != nil {
+	if err := ui.ObjectsPage(uiBuckets, bucket, prefix, objects).Render(ctx, w); err != nil {
 		http.Error(w, fmt.Sprintf("failed to render objects page: %v", err), http.StatusInternalServerError)
 		return
 	}
