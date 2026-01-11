@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -138,7 +139,7 @@ func HmacSHA256(key []byte, data string) []byte {
 
 // AuthenticateRequest checks the Authorization header for valid Basic Auth
 // credentials. It returns true if the credentials are valid, false otherwise.
-func (e *AwsHmacAuthEngine) AuthenticateRequest(r *http.Request) (bool, error) {
+func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Request) (bool, error) {
 
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, AWSv4Prefix) {

@@ -128,15 +128,22 @@ func validateBasicAuth(r *http.Request, accessKey string, secretKey string) bool
 func RequireAuthentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
+		ctx := r.Context()
+
 		var authEngine auth.AuthEngine
 		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, BasicAuthPrefix) {
+		switch {
+		case strings.HasPrefix(authHeader, AWSv4Prefix):
 			authEngine = auth.NewAwsHmacAuthEngine()
-		} else {
+		case strings.HasPrefix(authHeader, BasicAuthPrefix):
 			authEngine = auth.NewBasicAuthEngine()
+		default:
+			// No Authorization header present
+			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path, http.StatusForbidden)
+			return
 		}
 
-		if authorized, err := authEngine.AuthenticateRequest(r); !authorized || err != nil {
+		if authorized, err := authEngine.AuthenticateRequest(ctx, r); !authorized || err != nil {
 			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path, http.StatusForbidden)
 			return
 		}

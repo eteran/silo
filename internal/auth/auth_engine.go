@@ -1,6 +1,9 @@
 package auth
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 type AuthEngine interface {
 
@@ -8,5 +11,5 @@ type AuthEngine interface {
 	// authentication credentials. If valid, it returns true; otherwise, it
 	// returns false. An error is returned if there was an issue processing
 	// the authentication.
-	AuthenticateRequest(rq *http.Request) (bool, error)
+	AuthenticateRequest(ctx context.Context, rq *http.Request) (bool, error)
 }
