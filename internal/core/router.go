@@ -1,4 +1,4 @@
-package silo
+package core
 
 import (
 	"net/http"

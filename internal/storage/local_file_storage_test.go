@@ -1,4 +1,4 @@
-package silo
+package storage
 
 import (
 	"crypto/sha256"

@@ -174,7 +174,7 @@ templ LayoutWithSidebar(title string, buckets []Bucket, selectedBucket string, b
 					<ul class="bucket-list">
 					for _, b := range buckets {
 						<li>
-							<a class={fmt.Sprintf("bucket-link %s", templ.KV("active", b.Name == selectedBucket))} href={fmt.Sprintf("/bucket/%s", templ.EscapeString(b.Name))}>{b.Name}</a>
+							<a class={fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name == selectedBucket))} href={fmt.Sprintf("/bucket/%s", templ.EscapeString(b.Name))}>{b.Name}</a>
 						</li>
 					}
 					</ul>

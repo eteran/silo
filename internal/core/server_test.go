@@ -1,4 +1,4 @@
-package silo
+package core
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"silo/internal/auth"
 	"strings"
 	"testing"
 	"time"
@@ -1317,7 +1318,7 @@ func signRequestSigV4(t *testing.T, r *http.Request) {
 	r.Header.Set("X-Amz-Date", amzDate)
 
 	signedHeaders := []string{"host", "x-amz-content-sha256", "x-amz-date"}
-	canonicalReq := buildCanonicalRequest(r, signedHeaders, r.Header.Get("X-Amz-Content-Sha256"))
+	canonicalReq := auth.BuildCanonicalRequest(r, signedHeaders, r.Header.Get("X-Amz-Content-Sha256"))
 	crHash := sha256.Sum256([]byte(canonicalReq))
 	crHashHex := hex.EncodeToString(crHash[:])
 
@@ -1330,11 +1331,11 @@ func signRequestSigV4(t *testing.T, r *http.Request) {
 	}, "\n")
 
 	kSecret := []byte("AWS4" + SecretAccessKey)
-	kDate := hmacSHA256(kSecret, dateStamp)
-	kRegion := hmacSHA256(kDate, region)
-	kService := hmacSHA256(kRegion, service)
-	kSigning := hmacSHA256(kService, "aws4_request")
-	sig := hmacSHA256(kSigning, stringToSign)
+	kDate := auth.HmacSHA256(kSecret, dateStamp)
+	kRegion := auth.HmacSHA256(kDate, region)
+	kService := auth.HmacSHA256(kRegion, service)
+	kSigning := auth.HmacSHA256(kService, "aws4_request")
+	sig := auth.HmacSHA256(kSigning, stringToSign)
 	sigHex := hex.EncodeToString(sig)
 
 	cred := strings.Join([]string{AccessKeyID, dateStamp, region, service, "aws4_request"}, "/")

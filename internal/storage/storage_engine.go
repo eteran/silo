@@ -1,4 +1,8 @@
-package silo
+package storage
+
+// StorageEngine defines the interface for a storage backend that manages
+// object payloads organized into buckets, identified by their SHA-256
+// hexadecimal hashes.
 
 type StorageEngine interface {
 	// PutObject stores the raw object payload identified by its SHA-256

@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"silo/internal/silo"
+	"silo/internal/core"
 	"strconv"
 	"time"
 
@@ -49,11 +49,11 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	cfg := silo.Config{
+	cfg := core.Config{
 		DataDir: absDataDir,
 	}
 
-	server, err := silo.NewServer(ctx, cfg)
+	server, err := core.NewServer(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create silo server: %w", err)
 	}

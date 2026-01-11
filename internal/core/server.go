@@ -1,4 +1,4 @@
-package silo
+package core
 
 import (
 	"bufio"
@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"silo/internal/storage"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +38,7 @@ var (
 type Config struct {
 	DataDir string
 	Region  string
-	Engine  StorageEngine
+	Engine  storage.StorageEngine
 }
 
 // Server provides a minimal S3-compatible HTTP API.
@@ -93,7 +94,7 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	if cfg.Engine == nil {
-		cfg.Engine = NewLocalFileStorage(cfg.DataDir)
+		cfg.Engine = storage.NewLocalFileStorage(cfg.DataDir)
 	}
 
 	return &Server{cfg: cfg, db: db}, nil
