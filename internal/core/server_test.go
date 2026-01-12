@@ -1,4 +1,4 @@
-package core
+package core_test
 
 import (
 	"bytes"
@@ -13,11 +13,17 @@ import (
 	"os"
 	"path/filepath"
 	"silo/internal/auth"
+	"silo/internal/core"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	AccessKeyID     = "minioadmin"
+	SecretAccessKey = "minioadmin"
 )
 
 type authTransport struct {
@@ -40,12 +46,12 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // newTestServer creates a Server backed by temporary filesystem and SQLite DB.
 // It also returns an HTTP client that automatically adds the default test
 // credentials if no Authorization header is present.
-func newTestServer(t *testing.T) (*Server, *httptest.Server, *http.Client) {
+func newTestServer(t *testing.T) (*core.Server, *httptest.Server, *http.Client) {
 	t.Helper()
 
 	dataDir := t.TempDir()
 
-	srv, err := NewServer(t.Context(), Config{DataDir: dataDir})
+	srv, err := core.NewServer(t.Context(), core.Config{DataDir: dataDir})
 	require.NoError(t, err, "NewServer error")
 
 	httpSrv := httptest.NewServer(srv.Handler())
@@ -82,7 +88,7 @@ func TestCreateAndListBuckets(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET / status")
 
-	var listResp ListAllMyBucketsResult
+	var listResp core.ListAllMyBucketsResult
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListAllMyBucketsResult")
 
 	found := map[string]bool{}
@@ -212,7 +218,7 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.cfg.DataDir, bucket, subdir, hashHex)
+	objPath := filepath.Join(srv.Cfg.DataDir, bucket, subdir, hashHex)
 
 	_, err = os.Stat(objPath)
 	require.NoErrorf(t, err, "expected object file at %s", objPath)
@@ -254,7 +260,7 @@ func TestListObjects(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket status")
 
-	var listResp ListBucketResult
+	var listResp core.ListBucketResult
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListBucketResult")
 	require.Len(t, listResp.Contents, 3, "expected all objects without prefix filter")
 
@@ -264,7 +270,7 @@ func TestListObjects(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket with prefix status")
 
-	var listRespWithPrefix ListBucketResult
+	var listRespWithPrefix core.ListBucketResult
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listRespWithPrefix), "decoding ListBucketResult with prefix")
 	require.Len(t, listRespWithPrefix.Contents, 2, "expected only prefixed objects")
 	require.Equal(t, "dir/a.txt", listRespWithPrefix.Contents[0].Key, "first key with prefix")
@@ -315,9 +321,9 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// PUT bucket tagging.
-	tagging := Tagging{
-		XMLNS: s3XMLNamespace,
-		TagSet: []Tag{
+	tagging := core.Tagging{
+		XMLNS: core.S3XMLNamespace,
+		TagSet: []core.Tag{
 			{Key: "env", Value: "dev"},
 			{Key: "owner", Value: "alice"},
 		},
@@ -342,7 +348,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET bucket tagging status")
 
-	var got Tagging
+	var got core.Tagging
 	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&got), "decoding BucketTagging")
 	require.Len(t, got.TagSet, 2, "expected two tags")
 
@@ -405,9 +411,9 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 
 	_, httpSrv, client := newTestServer(t)
 
-	tagging := Tagging{
-		XMLNS:  s3XMLNamespace,
-		TagSet: []Tag{{Key: "env", Value: "dev"}},
+	tagging := core.Tagging{
+		XMLNS:  core.S3XMLNamespace,
+		TagSet: []core.Tag{{Key: "env", Value: "dev"}},
 	}
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
@@ -448,9 +454,9 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
 
 	// PUT object tagging.
-	tagging := Tagging{
-		XMLNS: s3XMLNamespace,
-		TagSet: []Tag{
+	tagging := core.Tagging{
+		XMLNS: core.S3XMLNamespace,
+		TagSet: []core.Tag{
 			{Key: "env", Value: "dev"},
 			{Key: "owner", Value: "bob"},
 		},
@@ -476,7 +482,7 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET object tagging status")
 
-	var got Tagging
+	var got core.Tagging
 	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&got), "decoding object BucketTagging")
 	require.Len(t, got.TagSet, 2, "expected two object tags")
 
@@ -553,9 +559,9 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
 
 	// Add tags.
-	tagging := Tagging{
-		XMLNS:  s3XMLNamespace,
-		TagSet: []Tag{{Key: "env", Value: "prod"}},
+	tagging := core.Tagging{
+		XMLNS:  core.S3XMLNamespace,
+		TagSet: []core.Tag{{Key: "env", Value: "prod"}},
 	}
 	var buf bytes.Buffer
 	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
@@ -608,9 +614,9 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Add tags.
-	tagging := Tagging{
-		XMLNS: s3XMLNamespace,
-		TagSet: []Tag{
+	tagging := core.Tagging{
+		XMLNS: core.S3XMLNamespace,
+		TagSet: []core.Tag{
 			{Key: "env", Value: "prod"},
 		},
 	}
@@ -712,7 +718,7 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	path := filepath.Join(srv.cfg.DataDir, bucket, subdir, hashHex)
+	path := filepath.Join(srv.Cfg.DataDir, bucket, subdir, hashHex)
 
 	info, err := os.Stat(path)
 	require.NoError(t, err, "expected payload file to exist")
@@ -753,8 +759,8 @@ func TestCopyObjectAcrossBucketsCreatesHardLink(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	pathSrc := filepath.Join(srv.cfg.DataDir, srcBucket, subdir, hashHex)
-	pathDst := filepath.Join(srv.cfg.DataDir, dstBucket, subdir, hashHex)
+	pathSrc := filepath.Join(srv.Cfg.DataDir, srcBucket, subdir, hashHex)
+	pathDst := filepath.Join(srv.Cfg.DataDir, dstBucket, subdir, hashHex)
 
 	infoSrc, err := os.Stat(pathSrc)
 	require.NoError(t, err, "expected source payload file")
@@ -786,7 +792,7 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.cfg.DataDir, bucket, subdir, hashHex)
+	objPath := filepath.Join(srv.Cfg.DataDir, bucket, subdir, hashHex)
 	require.NoError(t, os.Remove(objPath), "removing payload file")
 
 	// GET should now fail with 500 Internal Server Error due to missing payload.
@@ -872,7 +878,7 @@ func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	srcPath := filepath.Join(srv.cfg.DataDir, srcBucket, subdir, hashHex)
+	srcPath := filepath.Join(srv.Cfg.DataDir, srcBucket, subdir, hashHex)
 	require.NoError(t, os.Remove(srcPath), "removing source payload file")
 
 	// Attempt to CopyObject; metadata exists but payload is gone.
@@ -928,7 +934,7 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "ListObjectsV2 page 1 status")
 
-	var v2Resp ListBucketResultV2
+	var v2Resp core.ListBucketResultV2
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&v2Resp), "decoding ListBucketResultV2 page 1")
 	require.Equal(t, 2, v2Resp.KeyCount, "KeyCount page 1")
 	require.True(t, v2Resp.IsTruncated, "IsTruncated page 1")
@@ -950,7 +956,7 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusOK, resp2.StatusCode, "ListObjectsV2 page 2 status")
 
-	var v2Resp2 ListBucketResultV2
+	var v2Resp2 core.ListBucketResultV2
 	require.NoError(t, xml.NewDecoder(resp2.Body).Decode(&v2Resp2), "decoding ListBucketResultV2 page 2")
 	require.Equal(t, 1, v2Resp2.KeyCount, "KeyCount page 2")
 	require.False(t, v2Resp2.IsTruncated, "IsTruncated page 2")
@@ -998,7 +1004,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "ListObjectsV2 with prefix status")
 
-	var v2Resp ListBucketResultV2
+	var v2Resp core.ListBucketResultV2
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&v2Resp), "decoding ListBucketResultV2 with prefix")
 	require.Equal(t, 2, v2Resp.KeyCount, "KeyCount with prefix")
 	require.False(t, v2Resp.IsTruncated, "IsTruncated with prefix")
@@ -1021,7 +1027,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusOK, resp2.StatusCode, "ListObjectsV2 with start-after status")
 
-	var v2Resp2 ListBucketResultV2
+	var v2Resp2 core.ListBucketResultV2
 	require.NoError(t, xml.NewDecoder(resp2.Body).Decode(&v2Resp2), "decoding ListBucketResultV2 with start-after")
 	require.Equal(t, 1, v2Resp2.KeyCount, "KeyCount with start-after")
 	require.False(t, v2Resp2.IsTruncated, "IsTruncated with start-after")
@@ -1236,12 +1242,12 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 
 	// Ensure bucket metadata exists.
 	var name string
-	err = srv.db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
+	err = srv.Db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
 	require.NoError(t, err, "expected bucket metadata to exist before delete")
 	require.Equal(t, bucket, name, "bucket name in metadata")
 
 	// Ensure bucket directory exists on disk.
-	bucketPath := filepath.Join(srv.cfg.DataDir, bucket)
+	bucketPath := filepath.Join(srv.Cfg.DataDir, bucket)
 	info, err := os.Stat(bucketPath)
 	require.NoError(t, err, "expected bucket directory to exist before delete")
 	require.True(t, info.IsDir(), "bucket path should be a directory")
@@ -1255,7 +1261,7 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE bucket status")
 
 	// Bucket metadata should be gone.
-	err = srv.db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
+	err = srv.Db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
 	require.Error(t, err, "expected bucket metadata to be removed")
 	require.ErrorIs(t, err, sql.ErrNoRows, "expected ErrNoRows for deleted bucket")
 
@@ -1351,7 +1357,7 @@ func signRequestSigV4(t *testing.T, r *http.Request) {
 func TestRequireAuthentication_AWSSigV4_Succeeds(t *testing.T) {
 	t.Parallel()
 
-	handler := RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := core.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1367,7 +1373,7 @@ func TestRequireAuthentication_AWSSigV4_Succeeds(t *testing.T) {
 func TestRequireAuthentication_AWSSigV4_InvalidSignature(t *testing.T) {
 	t.Parallel()
 
-	handler := RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := core.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

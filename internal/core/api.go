@@ -2,7 +2,7 @@ package core
 
 import "encoding/xml"
 
-const s3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
+const S3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 type ListAllMyBucketsOwner struct {
 	ID          string `xml:"ID"`

@@ -43,8 +43,8 @@ type Config struct {
 
 // Server provides a minimal S3-compatible HTTP API.
 type Server struct {
-	cfg Config
-	db  *sql.DB
+	Cfg Config
+	Db  *sql.DB
 }
 
 // initSchema initializes the metadata database schema by applying all
@@ -97,12 +97,12 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 		cfg.Engine = storage.NewLocalFileStorage(cfg.DataDir)
 	}
 
-	return &Server{cfg: cfg, db: db}, nil
+	return &Server{Cfg: cfg, Db: db}, nil
 }
 
 // Close closes any resources held by the Server.
 func (s *Server) Close() error {
-	return s.db.Close()
+	return s.Db.Close()
 }
 
 // WithTransaction runs a function within a database transaction.
@@ -127,7 +127,7 @@ func WithTransaction(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error)
 // bucketExists checks whether a bucket with the given name exists.
 func (s *Server) bucketExists(ctx context.Context, bucket string) (bool, error) {
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM buckets WHERE name = ?`, bucket).Scan(&count); err != nil {
+	if err := s.Db.QueryRowContext(ctx, `SELECT COUNT(*) FROM buckets WHERE name = ?`, bucket).Scan(&count); err != nil {
 		return false, err
 	}
 
@@ -138,7 +138,7 @@ func (s *Server) bucketExists(ctx context.Context, bucket string) (bool, error) 
 // It returns true if the bucket was created, false if it already existed.
 func (s *Server) ensureBucket(ctx context.Context, name string) (bool, error) {
 	now := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.Db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO buckets(name, created_at, modified_at) VALUES(?, ?, ?)`,
 		name, now, now,
 	)
@@ -611,7 +611,7 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 			return
 		}
 
-		tmpDir := filepath.Join(s.cfg.DataDir, "tmp")
+		tmpDir := filepath.Join(s.Cfg.DataDir, "tmp")
 		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 			slog.Error("Error creating temp dir for streaming upload", "path", tmpDir, "err", err)
 			writeS3Error(w, "InternalError", "Error creating temp dir for streaming upload", r.URL.Path, http.StatusInternalServerError)
@@ -641,7 +641,7 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 			return
 		}
 
-		if err := s.cfg.Engine.PutObjectFromFile(bucket, hash, tempPath.Name(), size); err != nil {
+		if err := s.Cfg.Engine.PutObjectFromFile(bucket, hash, tempPath.Name(), size); err != nil {
 			slog.Error("Store object payload from file", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 			return
@@ -660,7 +660,7 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 
 		sum := sha256.Sum256(data)
 		hashHex = hex.EncodeToString(sum[:])
-		if err := s.cfg.Engine.PutObject(bucket, hashHex, data); err != nil {
+		if err := s.Cfg.Engine.PutObject(bucket, hashHex, data); err != nil {
 			slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 			return
@@ -676,7 +676,7 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 	parent := parentPrefixForKey(key)
 	now := time.Now().UTC()
 
-	_, err = s.db.ExecContext(r.Context(),
+	_, err = s.Db.ExecContext(r.Context(),
 		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at, modified_at)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bucket, key) DO UPDATE SET
@@ -714,7 +714,7 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 		modifiedAt  time.Time
 	)
 
-	err := s.db.QueryRowContext(r.Context(),
+	err := s.Db.QueryRowContext(r.Context(),
 		`SELECT hash, size, content_type, modified_at FROM objects WHERE bucket = ? AND key = ?`,
 		bucket, key,
 	).Scan(&hashHex, &size, &contentType, &modifiedAt)
@@ -746,7 +746,7 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 // ------ Individual API HTTP handlers ------
 
 func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	_, err := s.db.ExecContext(r.Context(), `DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
+	_, err := s.Db.ExecContext(r.Context(), `DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
 	if err != nil {
 		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -767,7 +767,7 @@ func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, 
 
 	// Ensure object exists.
 	var exists int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
+	if err := s.Db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 			return
@@ -790,7 +790,7 @@ func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+	if err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM object_tags WHERE bucket = ? AND key = ?`, bucket, key); err != nil {
 			slog.Error("Delete existing object tags", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -829,7 +829,7 @@ func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, 
 func (s *Server) handleGetObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	// Ensure object exists.
 	var exists int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
+	if err := s.Db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 			return
@@ -839,7 +839,7 @@ func (s *Server) handleGetObjectTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	rows, err := s.db.QueryContext(r.Context(), `SELECT tag_key, tag_value FROM object_tags WHERE bucket = ? AND key = ? ORDER BY tag_key`, bucket, key)
+	rows, err := s.Db.QueryContext(r.Context(), `SELECT tag_key, tag_value FROM object_tags WHERE bucket = ? AND key = ? ORDER BY tag_key`, bucket, key)
 	if err != nil {
 		slog.Error("Query object tags", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -847,7 +847,7 @@ func (s *Server) handleGetObjectTagging(w http.ResponseWriter, r *http.Request, 
 	}
 	defer rows.Close()
 
-	tagging := Tagging{XMLNS: s3XMLNamespace}
+	tagging := Tagging{XMLNS: S3XMLNamespace}
 	for rows.Next() {
 		var tag Tag
 		if err := rows.Scan(&tag.Key, &tag.Value); err != nil {
@@ -873,7 +873,7 @@ func (s *Server) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 	// Ensure object exists.
 	var exists int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
+	if err := s.Db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 			return
@@ -883,7 +883,7 @@ func (s *Server) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+	if err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM object_tags WHERE bucket = ? AND key = ?`, bucket, key); err != nil {
 			slog.Error("Delete object tags", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -907,7 +907,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket 
 		modifiedAt  time.Time
 	)
 
-	err := s.db.QueryRowContext(r.Context(),
+	err := s.Db.QueryRowContext(r.Context(),
 		`SELECT hash, size, content_type, modified_at FROM objects WHERE bucket = ? AND key = ?`,
 		bucket, key,
 	).Scan(&hashHex, &size, &contentType, &modifiedAt)
@@ -923,7 +923,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket 
 		return
 	}
 
-	data, err := s.cfg.Engine.GetObject(bucket, hashHex)
+	data, err := s.Cfg.Engine.GetObject(bucket, hashHex)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "object payload missing", http.StatusInternalServerError)
@@ -988,8 +988,8 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 	}
 
 	resp := LocationConstraint{
-		XMLNS:  s3XMLNamespace,
-		Region: s.cfg.Region,
+		XMLNS:  S3XMLNamespace,
+		Region: s.Cfg.Region,
 	}
 
 	if err := writeXMLResponse(w, resp); err != nil {
@@ -1028,7 +1028,7 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 
 	now := time.Now().UTC()
 
-	err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+	err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
 			slog.Error("Delete existing bucket tags", "bucket", bucket, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1083,7 +1083,7 @@ func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	rows, err := s.db.QueryContext(r.Context(), `SELECT key, value FROM bucket_tags WHERE bucket = ? ORDER BY key`, bucket)
+	rows, err := s.Db.QueryContext(r.Context(), `SELECT key, value FROM bucket_tags WHERE bucket = ? ORDER BY key`, bucket)
 	if err != nil {
 		slog.Error("Query bucket tags", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1091,7 +1091,7 @@ func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, 
 	}
 	defer rows.Close()
 
-	tagging := Tagging{XMLNS: s3XMLNamespace}
+	tagging := Tagging{XMLNS: S3XMLNamespace}
 	for rows.Next() {
 		var tag Tag
 		if err := rows.Scan(&tag.Key, &tag.Value); err != nil {
@@ -1127,7 +1127,7 @@ func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now().UTC()
 
-	if err := WithTransaction(ctx, s.db, func(tx *sql.Tx) error {
+	if err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
 			slog.Error("Delete bucket tags", "bucket", bucket, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1151,7 +1151,7 @@ func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Reques
 
 // handleListBuckets implements GET / to list all buckets.
 func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), `SELECT name, created_at FROM buckets ORDER BY name`)
+	rows, err := s.Db.QueryContext(r.Context(), `SELECT name, created_at FROM buckets ORDER BY name`)
 	if err != nil {
 		slog.Error("List buckets", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -1170,7 +1170,7 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := ListAllMyBucketsResult{
-		XMLNS: s3XMLNamespace,
+		XMLNS: S3XMLNamespace,
 		Owner: ListAllMyBucketsOwner{
 			ID:          "silo",
 			DisplayName: "silo",
@@ -1214,7 +1214,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 		contentType sql.NullString
 	)
 
-	err = s.db.QueryRowContext(r.Context(),
+	err = s.Db.QueryRowContext(r.Context(),
 		`SELECT hash, size, content_type FROM objects WHERE bucket = ? AND key = ?`,
 		srcBucket, srcKey,
 	).Scan(&hashHex, &size, &contentType)
@@ -1238,7 +1238,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 	// If copying across buckets, ask the storage engine to ensure the payload
 	// exists in the destination bucket, avoiding unnecessary reads/writes.
 	if srcBucket != destBucket {
-		if err := s.cfg.Engine.CopyObject(srcBucket, hashHex, destBucket); err != nil {
+		if err := s.Cfg.Engine.CopyObject(srcBucket, hashHex, destBucket); err != nil {
 			if os.IsNotExist(err) {
 				http.Error(w, "object payload missing", http.StatusInternalServerError)
 				return
@@ -1259,7 +1259,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 		ct = nil
 	}
 
-	_, err = s.db.ExecContext(r.Context(),
+	_, err = s.Db.ExecContext(r.Context(),
 		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at, modified_at)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bucket, key) DO UPDATE SET
@@ -1277,7 +1277,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 	}
 
 	resp := CopyObjectResult{
-		XMLNS:        s3XMLNamespace,
+		XMLNS:        S3XMLNamespace,
 		LastModified: now.UTC().Format(time.RFC3339),
 		ETag:         createETag(hashHex),
 	}
@@ -1304,14 +1304,14 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, buck
 	}
 
 	// Delete the bucket row; foreign-key cascade removes its objects.
-	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM buckets WHERE name = ?`, bucket); err != nil {
+	if _, err := s.Db.ExecContext(r.Context(), `DELETE FROM buckets WHERE name = ?`, bucket); err != nil {
 		slog.Error("Delete bucket metadata", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
 
 	// Remove on-disk contents for the bucket.
-	if err := s.cfg.Engine.DeleteBucket(bucket); err != nil {
+	if err := s.Cfg.Engine.DeleteBucket(bucket); err != nil {
 		slog.Error("Delete bucket storage", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -1356,7 +1356,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 	query += " ORDER BY key LIMIT ?"
 	args = append(args, maxKeys+1)
 
-	rows, err := s.db.QueryContext(r.Context(), query, args...)
+	rows, err := s.Db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		slog.Error("List objects", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1441,7 +1441,7 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 	}
 
 	resp := ListBucketResult{
-		XMLNS:          s3XMLNamespace,
+		XMLNS:          S3XMLNamespace,
 		Name:           bucket,
 		Prefix:         prefix,
 		Delimiter:      delimiter,
@@ -1504,7 +1504,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	query += " ORDER BY key LIMIT ?"
 	args = append(args, maxKeys+1)
 
-	rows, err := s.db.QueryContext(r.Context(), query, args...)
+	rows, err := s.Db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		slog.Error("List objects v2", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1603,7 +1603,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	}
 
 	resp := ListBucketResultV2{
-		XMLNS:                 s3XMLNamespace,
+		XMLNS:                 S3XMLNamespace,
 		Name:                  bucket,
 		Prefix:                prefix,
 		Delimiter:             delimiter,

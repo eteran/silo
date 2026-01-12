@@ -24,8 +24,8 @@ type AwsHmacAuthEngine struct {
 // and secret access key.
 func NewAwsHmacAuthEngine() *AwsHmacAuthEngine {
 	return &AwsHmacAuthEngine{
-		AccessKeyID:     "minioadmin",
-		SecretAccessKey: "minioadmin",
+		AccessKeyID:     DefaultAccessKeyID,
+		SecretAccessKey: DefaultSecretAccessKey,
 	}
 }
 

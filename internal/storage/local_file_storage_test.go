@@ -1,10 +1,11 @@
-package storage
+package storage_test
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"silo/internal/storage"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ func TestLocalFileStoragePutAndGet(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 	bucket := "example"
 
 	payload := []byte("hello local storage")
@@ -42,7 +43,7 @@ func TestLocalFileStorageInvalidHash(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 	bucket := "bucket"
 
 	// Hash shorter than 2 characters should be rejected by objectPath.
@@ -57,7 +58,7 @@ func TestLocalFileStorageCopyObjectInvalidHash(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 
 	err := engine.CopyObject("src", "a", "dest")
 	require.Error(t, err, "expected error for too-short hash on CopyObject")
@@ -67,7 +68,7 @@ func TestLocalFileStorageDeleteIsNoop(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 	bucket := "bucket"
 
 	// DeleteObject is currently defined as a no-op and should never error,
@@ -80,7 +81,7 @@ func TestLocalFileStorageHardLinksAcrossBuckets(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 
 	payload := []byte("shared payload")
 	sum := sha256.Sum256(payload)
@@ -109,7 +110,7 @@ func TestLocalFileStorageCopyObjectAcrossBuckets(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 
 	payload := []byte("copied payload")
 	sum := sha256.Sum256(payload)
@@ -138,7 +139,7 @@ func TestLocalFileStorageCopyObjectMissingSource(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	engine := NewLocalFileStorage(dataDir)
+	engine := storage.NewLocalFileStorage(dataDir)
 
 	err := engine.CopyObject("missing-bucket", strings.Repeat("0", 64), "dest-bucket")
 	require.Error(t, err, "expected error when source object file is missing")

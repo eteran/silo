@@ -1,19 +1,11 @@
 package core
 
 import (
-	"encoding/base64"
 	"log/slog"
 	"net/http"
 	"silo/internal/auth"
 	"strings"
 	"time"
-)
-
-const (
-	AccessKeyID     = "minioadmin"
-	SecretAccessKey = "minioadmin"
-	BasicAuthPrefix = "Basic "
-	AWSv4Prefix     = "AWS4-HMAC-SHA256 "
 )
 
 // ResponseWriterWrapper is a wrapper around the default http.ResponseWriter.
@@ -103,25 +95,6 @@ func LogRequest(next http.Handler) http.Handler {
 			slog.Debug("Request Headers", slog.Group("headers", headerAttrs...))
 		}
 	})
-}
-
-func validateBasicAuth(r *http.Request, accessKey string, secretKey string) bool {
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, BasicAuthPrefix) {
-		return false
-	}
-
-	payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len(BasicAuthPrefix):]))
-	if err != nil {
-		return false
-	}
-
-	creds := strings.SplitN(string(payload), ":", 2)
-	if len(creds) != 2 {
-		return false
-	}
-
-	return creds[0] == accessKey && creds[1] == secretKey
 }
 
 // RequireAuthentication is middleware that enforces authentication for S3 API requests.

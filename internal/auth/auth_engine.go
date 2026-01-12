@@ -5,6 +5,11 @@ import (
 	"net/http"
 )
 
+const (
+	DefaultAccessKeyID     = "minioadmin"
+	DefaultSecretAccessKey = "minioadmin"
+)
+
 type User struct {
 	AccessKeyID string
 }

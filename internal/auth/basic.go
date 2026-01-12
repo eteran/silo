@@ -20,8 +20,8 @@ const (
 // and secret access key.
 func NewBasicAuthEngine() *BasicAuthEngine {
 	return &BasicAuthEngine{
-		AccessKeyID:     "minioadmin",
-		SecretAccessKey: "minioadmin",
+		AccessKeyID:     DefaultAccessKeyID,
+		SecretAccessKey: DefaultSecretAccessKey,
 	}
 }
 
