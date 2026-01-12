@@ -27,9 +27,8 @@ const (
 	SecretAccessKey = "minioadmin"
 )
 
-// NewTestServer creates a Server backed by temporary filesystem and SQLite DB.
-// It also returns an HTTP client that automatically adds the default test
-// credentials if no Authorization header is present.
+// NewTestServer creates a Server backed by temporary filesystem and SQLite DB
+// and returns it along with an httptest.Server wrapping its handler.
 func NewTestServer(t *testing.T) (*core.Server, *httptest.Server) {
 	t.Helper()
 
@@ -71,7 +70,7 @@ func WithHeader(key string, value string) func(*http.Request) {
 }
 
 func DoMethod(t *testing.T, method string, url string, opts ...RequestOption) *http.Response {
-
+	t.Helper()
 	client := http.DefaultClient
 	req, err := http.NewRequestWithContext(t.Context(), method, url, nil)
 	require.NoError(t, err, fmt.Sprintf("creating %s request", method))
@@ -100,6 +99,29 @@ func DoDelete(t *testing.T, url string, opts ...RequestOption) *http.Response {
 	return DoMethod(t, http.MethodDelete, url, opts...)
 }
 
+// WithXMLBody encodes v as XML and attaches it as the request body with
+// Content-Type set to application/xml.
+func WithXMLBody(t *testing.T, v any) RequestOption {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, xml.NewEncoder(&buf).Encode(v), "encoding XML body")
+	body := buf.Bytes()
+	return func(req *http.Request) {
+		WithContent(body)(req)
+		WithContentType("application/xml")(req)
+	}
+}
+
+// DecodeS3Error decodes a minimal S3 error response and returns its Code.
+func DecodeS3Error(t *testing.T, r io.Reader) string {
+	t.Helper()
+	var s3Err struct {
+		Code string `xml:"Code"`
+	}
+	require.NoError(t, xml.NewDecoder(r).Decode(&s3Err), "decoding S3 error XML")
+	return s3Err.Code
+}
+
 func TestCreateAndListBuckets(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +129,7 @@ func TestCreateAndListBuckets(t *testing.T) {
 
 	for _, b := range []string{"bucket1", "bucket2"} {
 		resp := DoPut(t, httpSrv.URL+"/"+b)
-		resp.Body.Close()
+		defer resp.Body.Close()
 		require.Equalf(t, http.StatusOK, resp.StatusCode, "PUT bucket %s status", b)
 	}
 
@@ -144,7 +166,6 @@ func TestInvalidBucketNames(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		// capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -173,7 +194,7 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 
 	// PUT object (this will auto-create the bucket).
 	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body), WithContentType("text/plain"))
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 	require.NotEmpty(t, resp.Header.Get("ETag"), "expected ETag header on PUT response")
 
@@ -187,19 +208,19 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 
 	// HEAD object
 	headResp := DoHead(t, httpSrv.URL+"/"+bucket+"/"+key)
-	headResp.Body.Close()
+	defer headResp.Body.Close()
 	require.Equal(t, http.StatusOK, headResp.StatusCode, "HEAD object status")
 	require.Equal(t, "text/plain", headResp.Header.Get("Content-Type"), "HEAD Content-Type")
 	require.Equal(t, "11", headResp.Header.Get("Content-Length"), "HEAD Content-Length")
 
 	// DELETE object
 	delResp := DoDelete(t, httpSrv.URL+"/"+bucket+"/"+key)
-	delResp.Body.Close()
+	defer delResp.Body.Close()
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE object status")
 
 	// GET after delete should return 404.
 	resp = DoGet(t, httpSrv.URL+"/"+bucket+"/"+key)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET deleted object status")
 }
 
@@ -214,7 +235,7 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 
 	// PUT object
 	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 
 	// Compute expected SHA-256-based path.
@@ -236,14 +257,14 @@ func TestListObjects(t *testing.T) {
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Upload objects with and without the prefix.
 	keys := []string{"dir/a.txt", "dir/b.txt", "other.txt"}
 	for _, key := range keys {
 		resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent([]byte(key)), WithContentType("text/plain"))
-		resp.Body.Close()
+		defer resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 	}
 
@@ -277,7 +298,7 @@ func TestGetBucketLocation(t *testing.T) {
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Now fetch its location.
@@ -301,7 +322,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// PUT bucket tagging.
@@ -312,14 +333,9 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 			{Key: "owner", Value: "alice"},
 		},
 	}
-	var buf bytes.Buffer
-	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
+	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"?tagging", WithXMLBody(t, tagging))
 
-	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"?tagging",
-		WithContent(buf.Bytes()),
-		WithContentType("application/xml"))
-
-	putResp.Body.Close()
+	defer putResp.Body.Close()
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT bucket tagging status")
 
 	// GET bucket tagging and verify round-trip.
@@ -347,12 +363,7 @@ func TestGetBucketTaggingNoSuchBucket(t *testing.T) {
 	resp := DoGet(t, httpSrv.URL+"/nonexistent-bucket?tagging")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET bucket tagging status for missing bucket")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
+	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, resp.Body), "expected NoSuchBucket error code")
 }
 
 func TestGetBucketTaggingNoTagSet(t *testing.T) {
@@ -364,19 +375,14 @@ func TestGetBucketTaggingNoTagSet(t *testing.T) {
 
 	// Create the bucket without tags.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// GET tagging should return NoSuchTagSet.
 	getResp := DoGet(t, httpSrv.URL+"/"+bucket+"?tagging")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET bucket tagging status for empty tag set")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet error code")
+	require.Equal(t, "NoSuchTagSet", DecodeS3Error(t, getResp.Body), "expected NoSuchTagSet error code")
 }
 
 func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
@@ -388,18 +394,10 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 		XMLNS:  core.S3XMLNamespace,
 		TagSet: []core.Tag{{Key: "env", Value: "dev"}},
 	}
-	var buf bytes.Buffer
-	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
-
-	putResp := DoPut(t, httpSrv.URL+"/nonexistent-bucket?tagging", WithContent(buf.Bytes()), WithContentType("application/xml"))
+	putResp := DoPut(t, httpSrv.URL+"/nonexistent-bucket?tagging", WithXMLBody(t, tagging))
 	defer putResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, putResp.StatusCode, "PUT bucket tagging status for missing bucket")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(putResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
+	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, putResp.Body), "expected NoSuchBucket error code")
 }
 
 func TestPutAndGetObjectTagging(t *testing.T) {
@@ -413,7 +411,7 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 
 	// PUT object (auto-creates bucket).
 	putObjResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
-	putObjResp.Body.Close()
+	defer putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
 
 	// PUT object tagging.
@@ -424,11 +422,8 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 			{Key: "owner", Value: "bob"},
 		},
 	}
-	var buf bytes.Buffer
-	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
-
-	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", WithContent(buf.Bytes()), WithContentType("application/xml"))
-	putResp.Body.Close()
+	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", WithXMLBody(t, tagging))
+	defer putResp.Body.Close()
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object tagging status")
 
 	// GET object tagging and verify round-trip.
@@ -456,12 +451,7 @@ func TestGetObjectTaggingNoSuchKey(t *testing.T) {
 	resp := DoGet(t, httpSrv.URL+"/bucket/missing-key?tagging")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET object tagging status for missing key")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchKey", s3Err.Code, "expected NoSuchKey error code")
+	require.Equal(t, "NoSuchKey", DecodeS3Error(t, resp.Body), "expected NoSuchKey error code")
 }
 
 func TestGetObjectTaggingNoTagSet(t *testing.T) {
@@ -475,19 +465,14 @@ func TestGetObjectTaggingNoTagSet(t *testing.T) {
 
 	// PUT object (auto-creates bucket) without tags.
 	putObjResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
-	putObjResp.Body.Close()
+	defer putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
 
 	// GET tagging should return NoSuchTagSet.
 	getResp := DoGet(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET object tagging status for empty tag set")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet error code")
+	require.Equal(t, "NoSuchTagSet", DecodeS3Error(t, getResp.Body), "expected NoSuchTagSet error code")
 }
 
 func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
@@ -501,7 +486,7 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 
 	// PUT object (auto-creates bucket).
 	putObjResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
-	putObjResp.Body.Close()
+	defer putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
 
 	// Add tags.
@@ -509,31 +494,20 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 		XMLNS:  core.S3XMLNamespace,
 		TagSet: []core.Tag{{Key: "env", Value: "prod"}},
 	}
-	var buf bytes.Buffer
-	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
-
-	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging",
-		WithContent(buf.Bytes()),
-		WithContentType("application/xml"))
-	putResp.Body.Close()
+	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", WithXMLBody(t, tagging))
+	defer putResp.Body.Close()
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object tagging status")
 
 	// Delete tags.
 	delResp := DoDelete(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging")
 	defer delResp.Body.Close()
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE object tagging status")
-	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE object tagging status")
 
 	// Subsequent GET should return NoSuchTagSet.
 	getResp := DoGet(t, httpSrv.URL+"/"+bucket+"/"+key+"?tagging")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET object tagging status after delete")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet after delete")
+	require.Equal(t, "NoSuchTagSet", DecodeS3Error(t, getResp.Body), "expected NoSuchTagSet after delete")
 }
 
 func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
@@ -545,7 +519,7 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 
 	// Create the bucket.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Add tags.
@@ -555,11 +529,8 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 			{Key: "env", Value: "prod"},
 		},
 	}
-	var buf bytes.Buffer
-	require.NoError(t, xml.NewEncoder(&buf).Encode(tagging), "encoding tagging XML")
-
-	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"?tagging", WithContent(buf.Bytes()), WithContentType("application/xml"))
-	putResp.Body.Close()
+	putResp := DoPut(t, httpSrv.URL+"/"+bucket+"?tagging", WithXMLBody(t, tagging))
+	defer putResp.Body.Close()
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT bucket tagging status")
 
 	// Delete tags.
@@ -571,12 +542,7 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	getResp := DoGet(t, httpSrv.URL+"/"+bucket+"?tagging")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET bucket tagging status after delete")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(getResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchTagSet", s3Err.Code, "expected NoSuchTagSet after delete")
+	require.Equal(t, "NoSuchTagSet", DecodeS3Error(t, getResp.Body), "expected NoSuchTagSet after delete")
 }
 
 func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
@@ -587,12 +553,7 @@ func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
 	delResp := DoDelete(t, httpSrv.URL+"/nonexistent-bucket?tagging")
 	defer delResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, delResp.StatusCode, "DELETE bucket tagging status for missing bucket")
-
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(delResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
+	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, delResp.Body), "expected NoSuchBucket error code")
 }
 
 func TestCopyObjectWithinBucket(t *testing.T) {
@@ -607,7 +568,7 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 
 	// PUT source object (auto-creates bucket).
 	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+srcKey, WithContent(body))
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
 
 	// Copy within the same bucket using x-amz-copy-source.
@@ -647,7 +608,7 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 
 	// PUT object (auto-creates bucket and metadata).
 	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 
 	// Delete the underlying payload file from disk while leaving metadata.
@@ -679,11 +640,7 @@ func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, copyResp.StatusCode, "CopyObject status for missing source")
 
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(copyResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchKey", s3Err.Code, "expected NoSuchKey error code")
+	require.Equal(t, "NoSuchKey", DecodeS3Error(t, copyResp.Body), "expected NoSuchKey error code")
 }
 
 func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
@@ -700,11 +657,7 @@ func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, copyResp.StatusCode, "CopyObject status for invalid source header")
 
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(copyResp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "InvalidRequest", s3Err.Code, "expected InvalidRequest error code")
+	require.Equal(t, "InvalidRequest", DecodeS3Error(t, copyResp.Body), "expected InvalidRequest error code")
 }
 
 func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
@@ -719,7 +672,7 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 
 	// PUT source object.
 	resp := DoPut(t, httpSrv.URL+"/"+srcBucket+"/"+key, WithContent(body))
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
 
 	// Delete the underlying payload file for the source object.
@@ -748,14 +701,14 @@ func TestListObjectsV2Pagination(t *testing.T) {
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Upload three objects.
 	keys := []string{"a.txt", "b.txt", "c.txt"}
 	for _, key := range keys {
 		putResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent([]byte(key)), WithContentType("text/plain"))
-		putResp.Body.Close()
+		defer putResp.Body.Close()
 		require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object status")
 	}
 
@@ -809,14 +762,14 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Upload objects with and without the prefix.
 	keys := []string{"dir/a.txt", "dir/b.txt", "other.txt"}
 	for _, key := range keys {
 		putResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent([]byte(key)), WithContentType("text/plain"))
-		putResp.Body.Close()
+		defer putResp.Body.Close()
 		require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object status")
 	}
 
@@ -911,9 +864,8 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		// capture range variable
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
 			resp := DoMethod(t, tc.method, httpSrv.URL+tc.path)
 			defer resp.Body.Close()
@@ -923,11 +875,7 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 				return
 			}
 
-			var s3Err struct {
-				Code string `xml:"Code"`
-			}
-			require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
-			require.Equal(t, tc.wantErrorCode, s3Err.Code, "S3 error code")
+			require.Equal(t, tc.wantErrorCode, DecodeS3Error(t, resp.Body), "S3 error code")
 		})
 	}
 }
@@ -963,9 +911,9 @@ func TestUnknownRoutes(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		// capture range variable
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			resp := DoMethod(t, tc.method, httpSrv.URL+tc.path)
 			defer resp.Body.Close()
 
@@ -1019,9 +967,8 @@ func TestNotImplementedRoutes(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		// capture range variable
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
 			opts := []RequestOption{}
 			if tc.name == "UploadPart" {
@@ -1054,7 +1001,7 @@ func TestDeleteBucketRemovesMetadata(t *testing.T) {
 
 	// PUT object (auto-creates bucket and metadata).
 	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
-	resp.Body.Close()
+	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 
 	// Ensure bucket metadata exists.
@@ -1065,7 +1012,7 @@ func TestDeleteBucketRemovesMetadata(t *testing.T) {
 
 	// DELETE the bucket.
 	delResp := DoDelete(t, httpSrv.URL+"/"+bucket)
-	delResp.Body.Close()
+	defer delResp.Body.Close()
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE bucket status")
 
 	// Bucket metadata should be gone.
@@ -1086,11 +1033,7 @@ func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "DELETE bucket status")
 
-	var s3Err struct {
-		Code string `xml:"Code"`
-	}
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3Err), "decoding S3 error XML")
-	require.Equal(t, "NoSuchBucket", s3Err.Code, "expected NoSuchBucket error code")
+	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, resp.Body), "expected NoSuchBucket error code")
 }
 
 func signRequestSigV4(t *testing.T, r *http.Request) {
