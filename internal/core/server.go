@@ -105,8 +105,8 @@ func (s *Server) Close() error {
 	return s.Db.Close()
 }
 
-// WithTransaction runs a function within a database transaction.
-func WithTransaction(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) error {
+// withTransaction runs a function within a database transaction.
+func withTransaction(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("error beginning transaction: %w", err)
@@ -227,7 +227,7 @@ func isValidObjectKey(key string) bool {
 
 // validateBucketNameOrError writes an S3 InvalidBucketName error and returns
 // false if the provided name does not meet S3 bucket naming rules.
-func validateBucketNameOrError(w http.ResponseWriter, r *http.Request, bucket string) bool {
+func validateBucketNameOrError(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) bool {
 	if !isValidBucketName(bucket) {
 		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", r.URL.Path, http.StatusBadRequest)
 		return false
@@ -236,7 +236,7 @@ func validateBucketNameOrError(w http.ResponseWriter, r *http.Request, bucket st
 }
 
 // validateObjectKeyOrError writes an S3-style error for invalid object keys.
-func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string) bool {
+func validateObjectKeyOrError(ctx context.Context, w http.ResponseWriter, r *http.Request, key string) bool {
 	if !isValidObjectKey(key) {
 		writeS3Error(w, "InvalidObjectName", "The specified key is not valid.", r.URL.Path, http.StatusBadRequest)
 		return false
@@ -245,7 +245,7 @@ func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string
 }
 
 // writeXMLResponse encodes v as XML and writes it to w with a 200 OK status.
-func writeXMLResponse(w http.ResponseWriter, v any) error {
+func writeXMLResponse(ctx context.Context, w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	return xml.NewEncoder(w).Encode(v)
@@ -350,15 +350,15 @@ func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decod
 
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
 // and various bucket configuration APIs.
-func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleBucketPut(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
 
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.handlePutBucketTagging(w, r, bucket)
+		s.handlePutBucketTagging(ctx, w, r, bucket)
 	case q.Has("versioning"):
 		s.writeNotImplemented(w, r, "PutBucketVersioning")
 	case q.Has("encryption"):
@@ -374,13 +374,13 @@ func (s *Server) handleBucketPut(w http.ResponseWriter, r *http.Request, bucket 
 	case q.Has("replication"):
 		s.writeNotImplemented(w, r, "PutBucketReplication")
 	default:
-		s.handleCreateBucket(w, r, bucket)
+		s.handleCreateBucket(ctx, w, r, bucket)
 	}
 }
 
 // handleBucketPost implements POST /bucket[?subresource], such as DeleteObjects.
-func (s *Server) handleBucketPost(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleBucketPost(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
 
@@ -395,17 +395,17 @@ func (s *Server) handleBucketPost(w http.ResponseWriter, r *http.Request, bucket
 
 // handleBucketGet dispatches GET /bucket[?subresource] between ListObjects
 // and bucket-level read APIs.
-func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleBucketGet(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
 
 	q := r.URL.Query()
 	switch {
 	case q.Has("location"):
-		s.handleGetBucketLocation(w, r, bucket)
+		s.handleGetBucketLocation(ctx, w, r, bucket)
 	case q.Has("tagging"):
-		s.handleGetBucketTagging(w, r, bucket)
+		s.handleGetBucketTagging(ctx, w, r, bucket)
 	case q.Has("versioning"):
 		s.writeNotImplemented(w, r, "GetBucketVersioning")
 	case q.Has("encryption"):
@@ -421,26 +421,26 @@ func (s *Server) handleBucketGet(w http.ResponseWriter, r *http.Request, bucket 
 	case q.Has("replication"):
 		s.writeNotImplemented(w, r, "GetBucketReplication")
 	case q.Get("list-type") == "2":
-		s.handleListObjectsV2(w, r, bucket)
+		s.handleListObjectsV2(ctx, w, r, bucket)
 	case q.Has("versions"):
 		s.writeNotImplemented(w, r, "ListObjectVersions")
 	case q.Has("uploads"):
 		s.writeNotImplemented(w, r, "ListMultipartUploads")
 	default:
-		s.handleListObjects(w, r, bucket)
+		s.handleListObjects(ctx, w, r, bucket)
 	}
 }
 
 // handleBucketDelete implements DELETE /bucket[?subresource].
-func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleBucketDelete(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
 
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.handleDeleteBucketTagging(w, r, bucket)
+		s.handleDeleteBucketTagging(ctx, w, r, bucket)
 	case q.Has("encryption"):
 		s.writeNotImplemented(w, r, "DeleteBucketEncryption")
 	case q.Has("cors"):
@@ -453,13 +453,13 @@ func (s *Server) handleBucketDelete(w http.ResponseWriter, r *http.Request, buck
 		s.writeNotImplemented(w, r, "DeleteBucketReplication")
 	default:
 		// Primary bucket deletion (no subresources).
-		s.handleDeleteBucket(w, r, bucket)
+		s.handleDeleteBucket(ctx, w, r, bucket)
 	}
 }
 
 // handleBucketHead implements HEAD /bucket.
-func (s *Server) handleBucketHead(w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleBucketHead(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
 
@@ -481,11 +481,11 @@ func (s *Server) handleBucketHead(w http.ResponseWriter, r *http.Request, bucket
 
 // handleObjectPost implements POST /bucket/key[?subresource] operations such
 // as CompleteMultipartUpload, RestoreObject, and SelectObjectContent.
-func (s *Server) handleObjectPost(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleObjectPost(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(w, r, key) {
+	if !validateObjectKeyOrError(ctx, w, r, key) {
 		return
 	}
 
@@ -503,53 +503,53 @@ func (s *Server) handleObjectPost(w http.ResponseWriter, r *http.Request, bucket
 }
 
 // handleObjectGet implements GET /bucket/key to retrieve an object.
-func (s *Server) handleObjectGet(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleObjectGet(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(w, r, key) {
+	if !validateObjectKeyOrError(ctx, w, r, key) {
 		return
 	}
 
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.handleGetObjectTagging(w, r, bucket, key)
+		s.handleGetObjectTagging(ctx, w, r, bucket, key)
 	case q.Has("attributes"):
 		s.writeNotImplemented(w, r, "GetObjectAttributes")
 	case q.Has("uploadId"):
 		s.writeNotImplemented(w, r, "ListParts")
 	default:
-		s.handleGetObject(w, r, bucket, key)
+		s.handleGetObject(ctx, w, r, bucket, key)
 	}
 }
 
 // handleObjectDelete implements DELETE /bucket/key to delete an object.
-func (s *Server) handleObjectDelete(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleObjectDelete(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(w, r, key) {
+	if !validateObjectKeyOrError(ctx, w, r, key) {
 		return
 	}
 
 	q := r.URL.Query()
 	switch {
 	case q.Has("tagging"):
-		s.handleDeleteObjectTagging(w, r, bucket, key)
+		s.handleDeleteObjectTagging(ctx, w, r, bucket, key)
 	case q.Has("uploadId"):
 		s.writeNotImplemented(w, r, "AbortMultipartUpload")
 	default:
-		s.handleDeleteObject(w, r, bucket, key)
+		s.handleDeleteObject(ctx, w, r, bucket, key)
 	}
 }
 
 // handleObjectPut implements PUT /bucket/key to store an object.
-func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(w, r, key) {
+	if !validateObjectKeyOrError(ctx, w, r, key) {
 		return
 	}
 
@@ -567,12 +567,12 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 
 	if q.Has("tagging") {
-		s.handlePutObjectTagging(w, r, bucket, key)
+		s.handlePutObjectTagging(ctx, w, r, bucket, key)
 		return
 	}
 
 	if copySource := r.Header.Get("x-amz-copy-source"); copySource != "" {
-		s.handleCopyObject(w, r, bucket, key, copySource)
+		s.handleCopyObject(ctx, w, r, bucket, key, copySource)
 		return
 	}
 
@@ -582,7 +582,7 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 	}
 
 	// Ensure bucket exists; for convenience, auto-create if missing.
-	if _, err := s.ensureBucket(r.Context(), bucket); err != nil {
+	if _, err := s.ensureBucket(ctx, bucket); err != nil {
 		slog.Error("Ensure bucket", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -699,11 +699,11 @@ func (s *Server) handleObjectPut(w http.ResponseWriter, r *http.Request, bucket 
 
 // handleObjectHead implements HEAD /bucket/key, returning metadata headers
 // compatible with S3 but without a response body.
-func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(w, r, bucket) {
+func (s *Server) handleObjectHead(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	if !validateBucketNameOrError(ctx, w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(w, r, key) {
+	if !validateObjectKeyOrError(ctx, w, r, key) {
 		return
 	}
 
@@ -745,7 +745,7 @@ func (s *Server) handleObjectHead(w http.ResponseWriter, r *http.Request, bucket
 
 // ------ Individual API HTTP handlers ------
 
-func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+func (s *Server) handleDeleteObject(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	_, err := s.Db.ExecContext(r.Context(), `DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
 	if err != nil {
 		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
@@ -762,8 +762,7 @@ func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request, buck
 // complete set of tags associated with an object. It treats tags as a
 // separate metadata resource and does not change the object's modified_at
 // (which reflects payload changes).
-func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	ctx := r.Context()
+func (s *Server) handlePutObjectTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 
 	// Ensure object exists.
 	var exists int
@@ -790,7 +789,7 @@ func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
+	if err := withTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM object_tags WHERE bucket = ? AND key = ?`, bucket, key); err != nil {
 			slog.Error("Delete existing object tags", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -826,7 +825,7 @@ func (s *Server) handlePutObjectTagging(w http.ResponseWriter, r *http.Request, 
 
 // handleGetObjectTagging implements GET /bucket/key?tagging to retrieve the
 // current set of tags associated with an object.
-func (s *Server) handleGetObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+func (s *Server) handleGetObjectTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	// Ensure object exists.
 	var exists int
 	if err := s.Db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
@@ -862,15 +861,15 @@ func (s *Server) handleGetObjectTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if err := writeXMLResponse(w, tagging); err != nil {
+	if err := writeXMLResponse(ctx, w, tagging); err != nil {
 		slog.Error("Encode object tagging XML", "bucket", bucket, "key", key, "err", err)
 	}
 }
 
 // handleDeleteObjectTagging implements DELETE /bucket/key?tagging to remove
 // all tags associated with an object.
-func (s *Server) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	ctx := r.Context()
+func (s *Server) handleDeleteObjectTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+
 	// Ensure object exists.
 	var exists int
 	if err := s.Db.QueryRowContext(r.Context(), `SELECT 1 FROM objects WHERE bucket = ? AND key = ?`, bucket, key).Scan(&exists); err != nil {
@@ -883,7 +882,7 @@ func (s *Server) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
+	if err := withTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM object_tags WHERE bucket = ? AND key = ?`, bucket, key); err != nil {
 			slog.Error("Delete object tags", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -899,7 +898,7 @@ func (s *Server) handleDeleteObjectTagging(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket string, key string) {
+func (s *Server) handleGetObject(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	var (
 		hashHex     string
 		size        int64
@@ -959,7 +958,7 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket 
 }
 
 // handleCreateBucket implements PUT /bucket to create a new bucket.
-func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+func (s *Server) handleCreateBucket(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 
 	if created, err := s.ensureBucket(r.Context(), bucket); err != nil {
 		slog.Error("Create bucket", "bucket", bucket, "err", err)
@@ -975,7 +974,7 @@ func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, buck
 }
 
 // handleGetBucketLocation implements GET /bucket?location
-func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request, bucket string) {
+func (s *Server) handleGetBucketLocation(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(r.Context(), bucket); err != nil {
@@ -992,16 +991,14 @@ func (s *Server) handleGetBucketLocation(w http.ResponseWriter, r *http.Request,
 		Region: s.Cfg.Region,
 	}
 
-	if err := writeXMLResponse(w, resp); err != nil {
+	if err := writeXMLResponse(ctx, w, resp); err != nil {
 		slog.Error("Encode bucket location XML", "bucket", bucket, "err", err)
 	}
 }
 
 // handlePutBucketTagging implements PUT /bucket?tagging to replace the
 // complete set of tags associated with a bucket.
-func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
-
-	ctx := r.Context()
+func (s *Server) handlePutBucketTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(ctx, bucket); err != nil {
@@ -1028,7 +1025,7 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 
 	now := time.Now().UTC()
 
-	err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
+	err := withTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
 			slog.Error("Delete existing bucket tags", "bucket", bucket, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1072,7 +1069,7 @@ func (s *Server) handlePutBucketTagging(w http.ResponseWriter, r *http.Request, 
 
 // handleGetBucketTagging implements GET /bucket?tagging to retrieve the
 // current set of tags associated with a bucket.
-func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
+func (s *Server) handleGetBucketTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(r.Context(), bucket); err != nil {
 		slog.Error("Get bucket tagging lookup", "bucket", bucket, "err", err)
@@ -1106,15 +1103,15 @@ func (s *Server) handleGetBucketTagging(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if err := writeXMLResponse(w, tagging); err != nil {
+	if err := writeXMLResponse(ctx, w, tagging); err != nil {
 		slog.Error("Encode bucket tagging XML", "bucket", bucket, "err", err)
 	}
 }
 
 // handleDeleteBucketTagging implements DELETE /bucket?tagging to remove all
 // tags associated with a bucket.
-func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Request, bucket string) {
-	ctx := r.Context()
+func (s *Server) handleDeleteBucketTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(ctx, bucket); err != nil {
 		slog.Error("Delete bucket tagging lookup", "bucket", bucket, "err", err)
@@ -1127,7 +1124,7 @@ func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now().UTC()
 
-	if err := WithTransaction(ctx, s.Db, func(tx *sql.Tx) error {
+	if err := withTransaction(ctx, s.Db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket = ?`, bucket); err != nil {
 			slog.Error("Delete bucket tags", "bucket", bucket, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1150,8 +1147,8 @@ func (s *Server) handleDeleteBucketTagging(w http.ResponseWriter, r *http.Reques
 }
 
 // handleListBuckets implements GET / to list all buckets.
-func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Db.QueryContext(r.Context(), `SELECT name, created_at FROM buckets ORDER BY name`)
+func (s *Server) handleListBuckets(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	rows, err := s.Db.QueryContext(ctx, `SELECT name, created_at FROM buckets ORDER BY name`)
 	if err != nil {
 		slog.Error("List buckets", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -1178,14 +1175,14 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 		Buckets: buckets,
 	}
 
-	if err := writeXMLResponse(w, resp); err != nil {
+	if err := writeXMLResponse(ctx, w, resp); err != nil {
 		slog.Error("Encode list buckets XML", "err", err)
 	}
 }
 
 // handleCopyObject implements a basic version of S3 CopyObject for
 // non-multipart copies without conditional headers.
-func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBucket string, destKey string, copySource string) {
+func (s *Server) handleCopyObject(ctx context.Context, w http.ResponseWriter, r *http.Request, destBucket string, destKey string, copySource string) {
 	// Parse x-amz-copy-source, which is typically of the form
 	// "/source-bucket/source-key" or "source-bucket/source-key" and may be
 	// URL-encoded and include a query string.
@@ -1268,7 +1265,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 		ETag:         createETag(hashHex),
 	}
 
-	if err := writeXMLResponse(w, resp); err != nil {
+	if err := writeXMLResponse(ctx, w, resp); err != nil {
 		slog.Error("Encode copy object XML", "destBucket", destBucket, "destKey", destKey, "err", err)
 	}
 }
@@ -1277,7 +1274,7 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 // deletion operation (without subresources). It removes the bucket's
 // metadata entry and cascades object rows, then asks the storage engine to
 // delete the corresponding on-disk data.
-func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+func (s *Server) handleDeleteBucket(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(r.Context(), bucket); err != nil {
@@ -1301,7 +1298,7 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, buck
 
 // handleListObjects implements a simplified version of S3 ListObjects (v2)
 // for a single bucket: GET /bucket[?prefix=&max-keys=].
-func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucket string) {
+func (s *Server) handleListObjects(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 
 	// Ensure bucket exists.
 	if exists, err := s.bucketExists(r.Context(), bucket); err != nil {
@@ -1430,17 +1427,17 @@ func (s *Server) handleListObjects(w http.ResponseWriter, r *http.Request, bucke
 		CommonPrefixes: commonPrefixes,
 	}
 
-	if err := writeXMLResponse(w, resp); err != nil {
+	if err := writeXMLResponse(ctx, w, resp); err != nil {
 		slog.Error("Encode list objects XML", "bucket", bucket, "err", err)
 	}
 }
 
 // handleListObjectsV2 implements S3 ListObjectsV2:
 // GET /bucket?list-type=2[&prefix=&max-keys=&continuation-token=&start-after=].
-func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, bucket string) {
+func (s *Server) handleListObjectsV2(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
 
 	// Ensure bucket exists.
-	if exists, err := s.bucketExists(r.Context(), bucket); err != nil {
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
 		slog.Error("Check bucket exists (v2)", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -1596,7 +1593,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		CommonPrefixes:        commonPrefixes,
 	}
 
-	if err := writeXMLResponse(w, resp); err != nil {
+	if err := writeXMLResponse(ctx, w, resp); err != nil {
 		slog.Error("Encode list objects v2 XML", "bucket", bucket, "err", err)
 	}
 }
