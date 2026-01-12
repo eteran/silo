@@ -218,7 +218,7 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.Cfg.DataDir, bucket, subdir, hashHex)
+	objPath := filepath.Join(srv.Cfg.DataDir, subdir, hashHex)
 
 	_, err = os.Stat(objPath)
 	require.NoErrorf(t, err, "expected object file at %s", objPath)
@@ -718,57 +718,11 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	path := filepath.Join(srv.Cfg.DataDir, bucket, subdir, hashHex)
+	path := filepath.Join(srv.Cfg.DataDir, subdir, hashHex)
 
 	info, err := os.Stat(path)
 	require.NoError(t, err, "expected payload file to exist")
 	require.False(t, info.IsDir(), "payload path should be a file")
-}
-
-func TestCopyObjectAcrossBucketsCreatesHardLink(t *testing.T) {
-	t.Parallel()
-
-	srv, httpSrv, client := newTestServer(t)
-
-	srcBucket := "src-bucket"
-	dstBucket := "dst-bucket"
-	key := "file.bin"
-	body := []byte("shared-copy-payload")
-
-	// PUT source object into src bucket.
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
-	require.NoError(t, err, "creating PUT source request")
-	signRequestBasic(req)
-	resp, err := client.Do(req)
-	require.NoError(t, err, "PUT source error")
-	resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
-
-	// Copy to destination bucket.
-	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
-	require.NoError(t, err, "creating CopyObject request")
-	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
-	signRequestBasic(copyReq)
-	signRequestBasic(copyReq)
-	copyResp, err := client.Do(copyReq)
-	require.NoError(t, err, "CopyObject error")
-	copyResp.Body.Close()
-	require.Equal(t, http.StatusOK, copyResp.StatusCode, "CopyObject status")
-
-	// Both buckets should reference hard-linked files on disk.
-	sum := sha256.Sum256(body)
-	hashHex := hex.EncodeToString(sum[:])
-	subdir := hashHex[:2]
-	pathSrc := filepath.Join(srv.Cfg.DataDir, srcBucket, subdir, hashHex)
-	pathDst := filepath.Join(srv.Cfg.DataDir, dstBucket, subdir, hashHex)
-
-	infoSrc, err := os.Stat(pathSrc)
-	require.NoError(t, err, "expected source payload file")
-	infoDst, err := os.Stat(pathDst)
-	require.NoError(t, err, "expected dest payload file")
-
-	require.Equal(t, infoSrc.Size(), infoDst.Size(), "sizes should match for hard-linked files")
-	require.True(t, os.SameFile(infoSrc, infoDst), "files should be hard-linked (same inode)")
 }
 
 func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
@@ -792,7 +746,7 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.Cfg.DataDir, bucket, subdir, hashHex)
+	objPath := filepath.Join(srv.Cfg.DataDir, subdir, hashHex)
 	require.NoError(t, os.Remove(objPath), "removing payload file")
 
 	// GET should now fail with 500 Internal Server Error due to missing payload.
@@ -856,7 +810,7 @@ func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 	require.Equal(t, "InvalidRequest", s3Err.Code, "expected InvalidRequest error code")
 }
 
-func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
+func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 	t.Parallel()
 
 	srv, httpSrv, client := newTestServer(t)
@@ -878,7 +832,7 @@ func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	srcPath := filepath.Join(srv.Cfg.DataDir, srcBucket, subdir, hashHex)
+	srcPath := filepath.Join(srv.Cfg.DataDir, subdir, hashHex)
 	require.NoError(t, os.Remove(srcPath), "removing source payload file")
 
 	// Attempt to CopyObject; metadata exists but payload is gone.
@@ -890,7 +844,9 @@ func TestCopyObjectMissingPayloadOnSourceReturnsInternalError(t *testing.T) {
 	require.NoError(t, err, "CopyObject error")
 	defer copyResp.Body.Close()
 
-	require.Equal(t, http.StatusInternalServerError, copyResp.StatusCode, "CopyObject status for missing payload on source")
+	// NOTE(eteran): CopyObject only copies meta-data, so it should succeed
+	// even if the source payload is missing.
+	require.Equal(t, http.StatusOK, copyResp.StatusCode, "CopyObject status for missing payload on source")
 }
 
 func TestListObjectsV2Pagination(t *testing.T) {
@@ -1223,7 +1179,7 @@ func TestNotImplementedRoutes(t *testing.T) {
 	}
 }
 
-func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
+func TestDeleteBucketRemovesMetadata(t *testing.T) {
 	t.Parallel()
 
 	srv, httpSrv, client := newTestServer(t)
@@ -1246,12 +1202,6 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 	require.NoError(t, err, "expected bucket metadata to exist before delete")
 	require.Equal(t, bucket, name, "bucket name in metadata")
 
-	// Ensure bucket directory exists on disk.
-	bucketPath := filepath.Join(srv.Cfg.DataDir, bucket)
-	info, err := os.Stat(bucketPath)
-	require.NoError(t, err, "expected bucket directory to exist before delete")
-	require.True(t, info.IsDir(), "bucket path should be a directory")
-
 	// DELETE the bucket.
 	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating DELETE bucket request")
@@ -1264,11 +1214,6 @@ func TestDeleteBucketRemovesMetadataAndFiles(t *testing.T) {
 	err = srv.Db.QueryRowContext(t.Context(), `SELECT name FROM buckets WHERE name = ?`, bucket).Scan(&name)
 	require.Error(t, err, "expected bucket metadata to be removed")
 	require.ErrorIs(t, err, sql.ErrNoRows, "expected ErrNoRows for deleted bucket")
-
-	// Bucket directory should be removed from disk.
-	_, err = os.Stat(bucketPath)
-	require.Error(t, err, "expected bucket directory to be removed")
-	require.True(t, os.IsNotExist(err), "expected bucket path to not exist")
 }
 
 func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {

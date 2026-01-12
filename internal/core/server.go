@@ -1235,20 +1235,6 @@ func (s *Server) handleCopyObject(w http.ResponseWriter, r *http.Request, destBu
 		return
 	}
 
-	// If copying across buckets, ask the storage engine to ensure the payload
-	// exists in the destination bucket, avoiding unnecessary reads/writes.
-	if srcBucket != destBucket {
-		if err := s.Cfg.Engine.CopyObject(srcBucket, hashHex, destBucket); err != nil {
-			if os.IsNotExist(err) {
-				http.Error(w, "object payload missing", http.StatusInternalServerError)
-				return
-			}
-			slog.Error("Copy payload between buckets", "srcBucket", srcBucket, "destBucket", destBucket, "err", err)
-			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-			return
-		}
-	}
-
 	parent := parentPrefixForKey(destKey)
 	now := time.Now().UTC()
 
@@ -1306,13 +1292,6 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, buck
 	// Delete the bucket row; foreign-key cascade removes its objects.
 	if _, err := s.Db.ExecContext(r.Context(), `DELETE FROM buckets WHERE name = ?`, bucket); err != nil {
 		slog.Error("Delete bucket metadata", "bucket", bucket, "err", err)
-		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
-		return
-	}
-
-	// Remove on-disk contents for the bucket.
-	if err := s.Cfg.Engine.DeleteBucket(bucket); err != nil {
-		slog.Error("Delete bucket storage", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
 	}
