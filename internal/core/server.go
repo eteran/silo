@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"silo/internal/auth"
 	"silo/internal/storage"
 	"strconv"
 	"strings"
@@ -36,9 +37,10 @@ var (
 )
 
 type Config struct {
-	DataDir string
-	Region  string
-	Engine  storage.StorageEngine
+	DataDir       string
+	Region        string
+	Engine        storage.StorageEngine
+	Authenticator auth.AuthEngine
 }
 
 // Server provides a minimal S3-compatible HTTP API.
@@ -95,6 +97,13 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 
 	if cfg.Engine == nil {
 		cfg.Engine = storage.NewLocalFileStorage(cfg.DataDir)
+	}
+
+	if cfg.Authenticator == nil {
+		cfg.Authenticator = auth.NewCompoundAuthEngine(
+			auth.NewAwsHmacAuthEngine(),
+			auth.NewBasicAuthEngine(),
+		)
 	}
 
 	return &Server{Config: cfg, Db: db}, nil

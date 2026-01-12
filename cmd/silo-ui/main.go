@@ -102,7 +102,7 @@ func (s *Server) BucketContents(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 
-	listen := flag.String("listen", getenv("SILO_UI_LISTEN", "9100"), "HTTP listen address (host:port or just port)")
+	port := flag.String("port", getenv("SILO_UI_PORT", "9100"), "HTTP listen port")
 	endpoint := flag.String("s3-endpoint", getenv("SILO_UI_S3_ENDPOINT", "localhost:9000"), "S3 / Silo API endpoint (host:port)")
 	accessKey := flag.String("s3-access-key", getenv("SILO_UI_S3_ACCESS_KEY", "minioadmin"), "S3 access key")
 	secretKey := flag.String("s3-secret-key", getenv("SILO_UI_S3_SECRET_KEY", "minioadmin"), "S3 secret key")
@@ -137,23 +137,15 @@ func main() {
 	mux.HandleFunc("/", server.Home)
 	mux.HandleFunc("/bucket/{bucket}/{key...}", server.BucketContents)
 
-	addr := *listen
-	if addr[0] == ':' {
-		// ok as-is
-	} else if len(addr) > 0 && addr[0] >= '0' && addr[0] <= '9' && !containsRune(addr, ':') {
-		// pure port like "9100" -> ":9100"
-		addr = ":" + addr
-	}
-
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              fmt.Sprintf(":%s", *port),
 		Handler:           mux,
 		ReadHeaderTimeout: 15 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 	}
 
-	slog.Info("Starting Silo UI server", "addr", addr, "endpoint", *endpoint)
+	slog.Info("Starting Silo UI server", "port", *port, "s3_endpoint", *endpoint)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("Silo UI server exited with error", "err", err)
 		os.Exit(1)

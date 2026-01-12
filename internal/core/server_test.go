@@ -1095,7 +1095,9 @@ func signRequestSigV4(t *testing.T, r *http.Request) {
 func TestRequireAuthentication_AWSSigV4_Succeeds(t *testing.T) {
 	t.Parallel()
 
-	handler := core.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv, _ := NewTestServer(t)
+
+	handler := srv.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1111,7 +1113,9 @@ func TestRequireAuthentication_AWSSigV4_Succeeds(t *testing.T) {
 func TestRequireAuthentication_AWSSigV4_InvalidSignature(t *testing.T) {
 	t.Parallel()
 
-	handler := core.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv, _ := NewTestServer(t)
+
+	handler := srv.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

@@ -74,9 +74,9 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	// Add middleware
-	handler := SlashFix(mux)
-	handler = LogRequest(handler)
-	handler = RequireAuthentication(handler)
-	handler = Recoverer(handler)
+	handler := s.SlashFix(mux)
+	handler = s.LogRequest(handler)
+	handler = s.RequireAuthentication(handler)
+	handler = s.Recoverer(handler)
 	return handler
 }

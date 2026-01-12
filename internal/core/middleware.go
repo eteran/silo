@@ -3,7 +3,6 @@ package core
 import (
 	"log/slog"
 	"net/http"
-	"silo/internal/auth"
 	"strings"
 	"time"
 )
@@ -53,7 +52,7 @@ func (e LogEntry) Request() slog.Attr {
 }
 
 // LogRequest is middleware that logs incoming HTTP requests.
-func LogRequest(next http.Handler) http.Handler {
+func (s *Server) LogRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		entry := LogEntry{
@@ -98,17 +97,12 @@ func LogRequest(next http.Handler) http.Handler {
 }
 
 // RequireAuthentication is middleware that enforces authentication for S3 API requests.
-func RequireAuthentication(next http.Handler) http.Handler {
+func (s *Server) RequireAuthentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		ctx := r.Context()
 
-		authEngine := auth.NewCompoundAuthEngine(
-			auth.NewAwsHmacAuthEngine(),
-			auth.NewBasicAuthEngine(),
-		)
-
-		if user, err := authEngine.AuthenticateRequest(ctx, r); user == nil || err != nil {
+		if user, err := s.Config.Authenticator.AuthenticateRequest(ctx, r); user == nil || err != nil {
 			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path, http.StatusForbidden)
 			return
 		}
@@ -117,7 +111,7 @@ func RequireAuthentication(next http.Handler) http.Handler {
 	})
 }
 
-func SlashFix(next http.Handler) http.Handler {
+func (s *Server) SlashFix(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Replace all occurrences of "//" with "/" in the URL path
 		r.URL.Path = strings.ReplaceAll(r.URL.Path, "//", "/")
@@ -130,7 +124,7 @@ func SlashFix(next http.Handler) http.Handler {
 	})
 }
 
-func Recoverer(next http.Handler) http.Handler {
+func (s *Server) Recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rvr := recover(); rvr != nil {
