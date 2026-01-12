@@ -29,7 +29,7 @@ const (
 // newTestServer creates a Server backed by temporary filesystem and SQLite DB.
 // It also returns an HTTP client that automatically adds the default test
 // credentials if no Authorization header is present.
-func newTestServer(t *testing.T) (*core.Server, *httptest.Server, *http.Client) {
+func newTestServer(t *testing.T) (*core.Server, *httptest.Server) {
 	t.Helper()
 
 	dataDir := t.TempDir()
@@ -38,18 +38,18 @@ func newTestServer(t *testing.T) (*core.Server, *httptest.Server, *http.Client) 
 	require.NoError(t, err, "NewServer error")
 
 	httpSrv := httptest.NewServer(srv.Handler())
-	client := httpSrv.Client()
 
 	t.Cleanup(func() { _ = srv.Close() })
 	t.Cleanup(httpSrv.Close)
 
-	return srv, httpSrv, client
+	return srv, httpSrv
 }
 
 func TestCreateAndListBuckets(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	for _, b := range []string{"bucket1", "bucket2"} {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+b, nil)
@@ -84,7 +84,8 @@ func TestCreateAndListBuckets(t *testing.T) {
 
 func TestInvalidBucketNames(t *testing.T) {
 	t.Parallel()
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	tests := []struct {
 		name   string
@@ -122,7 +123,8 @@ func TestInvalidBucketNames(t *testing.T) {
 func TestPutGetHeadDeleteObject(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "test-bucket"
 	key := "dir1/object.txt"
@@ -187,7 +189,8 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 func TestObjectStoredBySHA256Path(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv, client := newTestServer(t)
+	srv, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "sha-bucket"
 	key := "file.bin"
@@ -215,7 +218,8 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 func TestListObjects(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "list-bucket"
 
@@ -276,7 +280,8 @@ func TestListObjects(t *testing.T) {
 func TestGetBucketLocation(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "location-bucket"
 
@@ -308,7 +313,8 @@ func TestGetBucketLocation(t *testing.T) {
 func TestPutAndGetBucketTagging(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "tag-bucket"
 
@@ -368,7 +374,8 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 func TestGetBucketTaggingNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/nonexistent-bucket?tagging", nil)
 	require.NoError(t, err, "creating GET bucket tagging request")
@@ -388,7 +395,8 @@ func TestGetBucketTaggingNoSuchBucket(t *testing.T) {
 func TestGetBucketTaggingNoTagSet(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "empty-tag-bucket"
 
@@ -420,7 +428,8 @@ func TestGetBucketTaggingNoTagSet(t *testing.T) {
 func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	tagging := core.Tagging{
 		XMLNS:  core.S3XMLNamespace,
@@ -449,7 +458,8 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 func TestPutAndGetObjectTagging(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "obj-tag-bucket"
 	key := "obj.txt"
@@ -513,7 +523,8 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 func TestGetObjectTaggingNoSuchKey(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/bucket/missing-key?tagging", nil)
 	require.NoError(t, err, "creating GET object tagging request")
@@ -533,7 +544,8 @@ func TestGetObjectTaggingNoSuchKey(t *testing.T) {
 func TestGetObjectTaggingNoTagSet(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "obj-empty-tag-bucket"
 	key := "obj.txt"
@@ -567,7 +579,8 @@ func TestGetObjectTaggingNoTagSet(t *testing.T) {
 func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "obj-delete-tag-bucket"
 	key := "obj.txt"
@@ -628,7 +641,8 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "delete-tag-bucket"
 
@@ -688,7 +702,8 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/nonexistent-bucket?tagging", nil)
 	require.NoError(t, err, "creating DELETE bucket tagging request")
@@ -709,7 +724,8 @@ func TestDeleteBucketTaggingNoSuchBucket(t *testing.T) {
 func TestCopyObjectWithinBucket(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv, client := newTestServer(t)
+	srv, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "copy-bucket"
 	srcKey := "src.txt"
@@ -762,7 +778,8 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv, client := newTestServer(t)
+	srv, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "missing-payload-bucket"
 	key := "file.bin"
@@ -797,7 +814,8 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	srcBucket := "src-bucket-missing"
 	dstBucket := "dst-bucket-missing"
@@ -825,7 +843,8 @@ func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
 func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	dstBucket := "dst-bucket-invalid-source"
 	key := "file.bin"
@@ -852,7 +871,8 @@ func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv, client := newTestServer(t)
+	srv, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	srcBucket := "src-bucket-missing-payload"
 	dstBucket := "dst-bucket-missing-payload"
@@ -893,7 +913,8 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 func TestListObjectsV2Pagination(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "listv2-bucket"
 
@@ -970,7 +991,8 @@ func TestListObjectsV2Pagination(t *testing.T) {
 func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "listv2-prefix-bucket"
 
@@ -1049,7 +1071,8 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 func TestErrorResponsesTableDriven(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	tests := []struct {
 		name           string
@@ -1126,7 +1149,8 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 func TestUnknownRoutes(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	tests := []struct {
 		name   string
@@ -1171,7 +1195,8 @@ func TestUnknownRoutes(t *testing.T) {
 func TestNotImplementedRoutes(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	tests := []struct {
 		name   string
@@ -1240,7 +1265,8 @@ func TestNotImplementedRoutes(t *testing.T) {
 func TestDeleteBucketRemovesMetadata(t *testing.T) {
 	t.Parallel()
 
-	srv, httpSrv, client := newTestServer(t)
+	srv, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "delete-bucket"
 	key := "obj.txt"
@@ -1279,7 +1305,8 @@ func TestDeleteBucketRemovesMetadata(t *testing.T) {
 func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 	t.Parallel()
 
-	_, httpSrv, client := newTestServer(t)
+	_, httpSrv := newTestServer(t)
+	client := http.DefaultClient
 
 	bucket := "missing-bucket"
 
