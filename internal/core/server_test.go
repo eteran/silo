@@ -38,7 +38,7 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	req2 := req.Clone(req.Context())
 	if req2.Header.Get("Authorization") == "" {
-		//req2.SetBasicAuth(AccessKeyID, SecretAccessKey)
+		req2.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	}
 	return base.RoundTrip(req2)
 }
