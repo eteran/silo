@@ -33,7 +33,10 @@ var (
 	//go:embed migrations
 	migrationsFS embed.FS
 
-	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
+	// Regex for validating S3 bucket names.
+	// matches lowercase letters, digits, dots, and hyphens,
+	// must start and end with a letter or digit, and must be between 3 and 63 characters long.
+	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 )
 
 type Config struct {
@@ -180,9 +183,6 @@ func writeS3Error(w http.ResponseWriter, code string, message string, resource s
 // isValidBucketName implements the standard S3 bucket naming rules for
 // "virtual hosted-style" buckets.
 func isValidBucketName(name string) bool {
-	if len(name) < 3 || len(name) > 63 {
-		return false
-	}
 
 	// Must consist only of lowercase letters, digits, dots, or hyphens,
 	// and must start and end with a letter or digit.
