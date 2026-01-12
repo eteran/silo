@@ -27,35 +27,7 @@ func ObjectPath(directory string, hashHex string) (string, error) {
 		return "", fmt.Errorf("invalid hash length: %d", len(hashHex))
 	}
 	subdir := hashHex[:2]
-	return filepath.Join(directory, subdir, hashHex), nil
-}
-
-func LocateExistingObject(directory string, targetObject string, hashHex string, size int64) []string {
-	// If an object with the same hash and size already exists in any bucket,
-	// create a hard link instead of writing a new copy.
-	subdir := hashHex[:2]
-	pattern := filepath.Join(directory, subdir, hashHex)
-	matches, _ := filepath.Glob(pattern)
-
-	results := make([]string, 0)
-	for _, existing := range matches {
-		if existing == targetObject {
-			continue
-		}
-
-		info, err := os.Stat(existing)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-
-		if info.Size() != size {
-			continue
-		}
-
-		results = append(results, existing)
-	}
-
-	return results
+	return filepath.Join(directory, "objects", subdir, hashHex), nil
 }
 
 // PutObject stores the given data as the object identified by hashHex.
