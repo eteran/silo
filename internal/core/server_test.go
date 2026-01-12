@@ -26,23 +26,6 @@ const (
 	SecretAccessKey = "minioadmin"
 )
 
-type authTransport struct {
-	base http.RoundTripper
-}
-
-func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-
-	req2 := req.Clone(req.Context())
-	if req2.Header.Get("Authorization") == "" {
-		req2.SetBasicAuth(AccessKeyID, SecretAccessKey)
-	}
-	return base.RoundTrip(req2)
-}
-
 // newTestServer creates a Server backed by temporary filesystem and SQLite DB.
 // It also returns an HTTP client that automatically adds the default test
 // credentials if no Authorization header is present.
@@ -56,7 +39,6 @@ func newTestServer(t *testing.T) (*core.Server, *httptest.Server, *http.Client) 
 
 	httpSrv := httptest.NewServer(srv.Handler())
 	client := httpSrv.Client()
-	client.Transport = &authTransport{base: client.Transport}
 
 	t.Cleanup(func() { _ = srv.Close() })
 	t.Cleanup(httpSrv.Close)
@@ -160,7 +142,10 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 	require.NotEmpty(t, resp.Header.Get("ETag"), "expected ETag header on PUT response")
 
 	// GET object
-	resp, err = client.Get(httpSrv.URL + "/" + bucket + "/" + key)
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+key, nil)
+	require.NoError(t, err, "creating GET object request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(getReq)
 	require.NoError(t, err, "GET object error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET object status")
@@ -190,7 +175,10 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE object status")
 
 	// GET after delete should return 404.
-	resp, err = client.Get(httpSrv.URL + "/" + bucket + "/" + key)
+	getDeletedReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+key, nil)
+	require.NoError(t, err, "creating GET deleted object request")
+	getDeletedReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(getDeletedReq)
 	require.NoError(t, err, "GET deleted object error")
 	resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET deleted object status")
@@ -237,6 +225,7 @@ func TestListObjects(t *testing.T) {
 	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -248,6 +237,7 @@ func TestListObjects(t *testing.T) {
 		putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
 		require.NoError(t, err, "creating PUT object request")
 		putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+		putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 		putResp, err := client.Do(putReq)
 		require.NoError(t, err, "PUT object error")
 		putResp.Body.Close()
@@ -255,7 +245,10 @@ func TestListObjects(t *testing.T) {
 	}
 
 	// List without prefix should see all objects.
-	resp, err = client.Get(httpSrv.URL + "/" + bucket)
+	listReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket, nil)
+	require.NoError(t, err, "creating GET bucket request")
+	listReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(listReq)
 	require.NoError(t, err, "GET bucket error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket status")
@@ -265,7 +258,10 @@ func TestListObjects(t *testing.T) {
 	require.Len(t, listResp.Contents, 3, "expected all objects without prefix filter")
 
 	// List with prefix should only return the two prefixed keys.
-	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?prefix=dir/")
+	listWithPrefixReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"?prefix=dir/", nil)
+	require.NoError(t, err, "creating GET bucket with prefix request")
+	listWithPrefixReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(listWithPrefixReq)
 	require.NoError(t, err, "GET bucket with prefix error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket with prefix status")
@@ -287,13 +283,17 @@ func TestGetBucketLocation(t *testing.T) {
 	// Create the bucket first.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// Now fetch its location.
-	resp, err = client.Get(httpSrv.URL + "/" + bucket + "?location")
+	locReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"?location", nil)
+	require.NoError(t, err, "creating GET bucket location request")
+	locReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(locReq)
 	require.NoError(t, err, "GET bucket location error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket location status")
@@ -315,6 +315,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	// Create the bucket first.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -336,6 +337,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	putReq.Header.Set("Content-Type", "application/xml")
 	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT bucket tagging error")
@@ -343,7 +345,10 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT bucket tagging status")
 
 	// GET bucket tagging and verify round-trip.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"?tagging", nil)
+	require.NoError(t, err, "creating GET bucket tagging request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET bucket tagging error")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET bucket tagging status")
@@ -365,7 +370,10 @@ func TestGetBucketTaggingNoSuchBucket(t *testing.T) {
 
 	_, httpSrv, client := newTestServer(t)
 
-	resp, err := client.Get(httpSrv.URL + "/nonexistent-bucket?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/nonexistent-bucket?tagging", nil)
+	require.NoError(t, err, "creating GET bucket tagging request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err := client.Do(getReq)
 	require.NoError(t, err, "GET bucket tagging error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET bucket tagging status for missing bucket")
@@ -394,7 +402,10 @@ func TestGetBucketTaggingNoTagSet(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
 
 	// GET tagging should return NoSuchTagSet.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"?tagging", nil)
+	require.NoError(t, err, "creating GET bucket tagging request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET bucket tagging error")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET bucket tagging status for empty tag set")
@@ -421,6 +432,7 @@ func TestPutBucketTaggingNoSuchBucket(t *testing.T) {
 	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/nonexistent-bucket?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT bucket tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
+	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT bucket tagging error")
@@ -447,6 +459,7 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 	putObjReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
 	putObjReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	putObjReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putObjResp, err := client.Do(putObjReq)
 	require.NoError(t, err, "PUT object error")
 	putObjResp.Body.Close()
@@ -469,6 +482,7 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT object tagging error")
@@ -476,7 +490,10 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT object tagging status")
 
 	// GET object tagging and verify round-trip.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key + "?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", nil)
+	require.NoError(t, err, "creating GET object tagging request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET object tagging error")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET object tagging status")
@@ -498,7 +515,10 @@ func TestGetObjectTaggingNoSuchKey(t *testing.T) {
 
 	_, httpSrv, client := newTestServer(t)
 
-	resp, err := client.Get(httpSrv.URL + "/bucket/missing-key?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/bucket/missing-key?tagging", nil)
+	require.NoError(t, err, "creating GET object tagging request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err := client.Do(getReq)
 	require.NoError(t, err, "GET object tagging error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "GET object tagging status for missing key")
@@ -522,13 +542,17 @@ func TestGetObjectTaggingNoTagSet(t *testing.T) {
 	// PUT object (auto-creates bucket) without tags.
 	putObjReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
+	putObjReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putObjResp, err := client.Do(putObjReq)
 	require.NoError(t, err, "PUT object error")
 	putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
 
 	// GET tagging should return NoSuchTagSet.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key + "?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", nil)
+	require.NoError(t, err, "creating GET object tagging request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET object tagging error")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET object tagging status for empty tag set")
@@ -552,6 +576,7 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	// PUT object (auto-creates bucket).
 	putObjReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT object request")
+	putObjReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putObjResp, err := client.Do(putObjReq)
 	require.NoError(t, err, "PUT object error")
 	putObjResp.Body.Close()
@@ -569,6 +594,7 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	require.NoError(t, err, "creating PUT object tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
 
+	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT object tagging error")
 	putResp.Body.Close()
@@ -584,7 +610,10 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE object tagging status")
 
 	// Subsequent GET should return NoSuchTagSet.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key + "?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+key+"?tagging", nil)
+	require.NoError(t, err, "creating GET object tagging request after delete")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET object tagging error after delete")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET object tagging status after delete")
@@ -625,7 +654,7 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"?tagging", io.NopCloser(bytes.NewReader(buf.Bytes())))
 	require.NoError(t, err, "creating PUT bucket tagging request")
 	putReq.Header.Set("Content-Type", "application/xml")
-
+	putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	putResp, err := client.Do(putReq)
 	require.NoError(t, err, "PUT bucket tagging error")
 	putResp.Body.Close()
@@ -641,7 +670,10 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, delResp.StatusCode, "DELETE bucket tagging status")
 
 	// Subsequent GET should return NoSuchTagSet.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "?tagging")
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"?tagging", nil)
+	require.NoError(t, err, "creating GET bucket tagging request after delete")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET bucket tagging error after delete")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, getResp.StatusCode, "GET bucket tagging status after delete")
@@ -704,7 +736,10 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 	require.Equal(t, http.StatusOK, copyResp.StatusCode, "CopyObject status")
 
 	// GET destination should return the same payload.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + dstKey)
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+dstKey, nil)
+	require.NoError(t, err, "creating GET copied object request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET copied object error")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET copied object status")
@@ -736,6 +771,7 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	// PUT object (auto-creates bucket and metadata).
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT object error")
 	resp.Body.Close()
@@ -749,7 +785,10 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	require.NoError(t, os.Remove(objPath), "removing payload file")
 
 	// GET should now fail with 500 Internal Server Error due to missing payload.
-	getResp, err := client.Get(httpSrv.URL + "/" + bucket + "/" + key)
+	getReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, httpSrv.URL+"/"+bucket+"/"+key, nil)
+	require.NoError(t, err, "creating GET object request")
+	getReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	getResp, err := client.Do(getReq)
 	require.NoError(t, err, "GET object error")
 	defer getResp.Body.Close()
 	require.Equal(t, http.StatusInternalServerError, getResp.StatusCode, "GET status for missing payload")
@@ -795,6 +834,7 @@ func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 	require.NoError(t, err, "creating CopyObject request")
 	// Missing bucket/key separator; handler should consider this invalid.
 	copyReq.Header.Set("x-amz-copy-source", "invalid-source")
+	copyReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 	copyResp, err := client.Do(copyReq)
 	require.NoError(t, err, "CopyObject error")
@@ -822,6 +862,7 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 	// PUT source object.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+srcBucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT source request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT source error")
 	resp.Body.Close()
@@ -838,6 +879,7 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 	copyReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+dstBucket+"/"+key, nil)
 	require.NoError(t, err, "creating CopyObject request")
 	copyReq.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+key)
+	copyReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 	copyResp, err := client.Do(copyReq)
 	require.NoError(t, err, "CopyObject error")
@@ -884,7 +926,10 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	q.Set("max-keys", "2")
 	listURL.RawQuery = q.Encode()
 
-	resp, err = client.Get(listURL.String())
+	listReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, listURL.String(), nil)
+	require.NoError(t, err, "creating GET ListObjectsV2 page 1 request")
+	listReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(listReq)
 	require.NoError(t, err, "GET ListObjectsV2 page 1 error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "ListObjectsV2 page 1 status")
@@ -906,7 +951,10 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	q2.Set("continuation-token", v2Resp.NextContinuationToken)
 	listURL2.RawQuery = q2.Encode()
 
-	resp2, err := client.Get(listURL2.String())
+	listReq2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, listURL2.String(), nil)
+	require.NoError(t, err, "creating GET ListObjectsV2 page 2 request")
+	listReq2.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp2, err := client.Do(listReq2)
 	require.NoError(t, err, "GET ListObjectsV2 page 2 error")
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusOK, resp2.StatusCode, "ListObjectsV2 page 2 status")
@@ -929,6 +977,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	// Create the bucket first.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating PUT bucket request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT bucket error")
 	resp.Body.Close()
@@ -939,6 +988,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	for _, key := range keys {
 		putReq, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader([]byte(key))))
 		require.NoError(t, err, "creating PUT object request")
+		putReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 		putResp, err := client.Do(putReq)
 		require.NoError(t, err, "PUT object error")
 		putResp.Body.Close()
@@ -954,7 +1004,10 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	q.Set("max-keys", "10")
 	listURL.RawQuery = q.Encode()
 
-	resp, err = client.Get(listURL.String())
+	listReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, listURL.String(), nil)
+	require.NoError(t, err, "creating GET ListObjectsV2 with prefix request")
+	listReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp, err = client.Do(listReq)
 	require.NoError(t, err, "GET ListObjectsV2 with prefix error")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "ListObjectsV2 with prefix status")
@@ -977,7 +1030,10 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 	q2.Set("max-keys", "10")
 	listURL2.RawQuery = q2.Encode()
 
-	resp2, err := client.Get(listURL2.String())
+	listReq2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, listURL2.String(), nil)
+	require.NoError(t, err, "creating GET ListObjectsV2 with start-after request")
+	listReq2.SetBasicAuth(AccessKeyID, SecretAccessKey)
+	resp2, err := client.Do(listReq2)
 	require.NoError(t, err, "GET ListObjectsV2 with start-after error")
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusOK, resp2.StatusCode, "ListObjectsV2 with start-after status")
@@ -1043,6 +1099,8 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), tc.method, httpSrv.URL+tc.path, nil)
 			require.NoError(t, err, "creating request")
+			req.SetBasicAuth(AccessKeyID, SecretAccessKey)
+			req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 			resp, err := client.Do(req)
 			require.NoError(t, err, "performing request")
@@ -1098,7 +1156,7 @@ func TestUnknownRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), tc.method, httpSrv.URL+tc.path, nil)
 			require.NoError(t, err, "creating request")
-
+			req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 			resp, err := client.Do(req)
 			require.NoError(t, err, "performing request")
 			defer resp.Body.Close()
@@ -1162,6 +1220,7 @@ func TestNotImplementedRoutes(t *testing.T) {
 				req.Header.Set("x-amz-copy-source", "/src-bucket/src-object")
 			}
 			require.NoError(t, err, "creating request")
+			req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 			resp, err := client.Do(req)
 			require.NoError(t, err, "performing request")
@@ -1190,6 +1249,7 @@ func TestDeleteBucketRemovesMetadata(t *testing.T) {
 	// PUT object (auto-creates bucket and metadata).
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, httpSrv.URL+"/"+bucket+"/"+key, io.NopCloser(bytes.NewReader(body)))
 	require.NoError(t, err, "creating PUT request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	resp, err := client.Do(req)
 	require.NoError(t, err, "PUT object error")
 	resp.Body.Close()
@@ -1204,6 +1264,7 @@ func TestDeleteBucketRemovesMetadata(t *testing.T) {
 	// DELETE the bucket.
 	delReq, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating DELETE bucket request")
+	delReq.SetBasicAuth(AccessKeyID, SecretAccessKey)
 	delResp, err := client.Do(delReq)
 	require.NoError(t, err, "DELETE bucket error")
 	delResp.Body.Close()
@@ -1224,6 +1285,7 @@ func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, httpSrv.URL+"/"+bucket, nil)
 	require.NoError(t, err, "creating DELETE bucket request")
+	req.SetBasicAuth(AccessKeyID, SecretAccessKey)
 
 	resp, err := client.Do(req)
 	require.NoError(t, err, "DELETE bucket error")
