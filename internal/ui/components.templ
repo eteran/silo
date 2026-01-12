@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"path"
+	"github.com/dustin/go-humanize"
 )
 
 // Bucket represents a single S3 bucket for display.
@@ -36,18 +37,28 @@ templ ObjectsContents(bucket string, prefix string, objects []Object) {
     <section>
     <header>
         <h1>Bucket: {bucket}</h1>
-		if prefix == "" {
-			<p><a href="/">&larr; Back to buckets</a></p>
-		} else {
-			{{ idx := strings.LastIndex(strings.TrimRight(prefix, "/"), "/") }}
-			if idx == -1 {
-				// No further parent segment, go back to the bucket root.
-				<p><a href={fmt.Sprintf("/bucket/%s", templ.EscapeString(bucket))}>&larr; Back to /</a></p>
-			} else {
-				{{ parent := prefix[:idx+1] }}
-				<p><a href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(parent))}>&larr; Back to /{templ.EscapeString(parent)}</a></p>
-			}
-		}
+		<nav aria-label="Breadcrumb">
+			<small>
+				<a href="/">Buckets</a>
+				<span> / </span>
+				<a href={fmt.Sprintf("/bucket/%s", templ.EscapeString(bucket))}>{templ.EscapeString(bucket)}</a>
+				if prefix != "" {
+					{{ trimmed := strings.Trim(prefix, "/") }}
+					if trimmed != "" {
+						<span> / </span>
+						{{ parts := strings.Split(trimmed, "/") }}
+						{{ current := "" }}
+						for i, part := range parts {
+							if i > 0 {
+								<span> / </span>
+							}
+							{{ if current == "" { current = part + "/" } else { current = current + part + "/" } }}
+							<a href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(current))}>{templ.EscapeString(part)}</a>
+						}
+					}
+				}
+			</small>
+		</nav>
     </header>
     if len(objects) == 0 {
         <p>No objects in this bucket.</p>
@@ -72,11 +83,10 @@ templ ObjectsContents(bucket string, prefix string, objects []Object) {
 					<tr>
 						<td>
 							<span class="object-link">
-								<span class="object-icon object-icon-file" aria-hidden="true">📄</span>
-								<span>{templ.EscapeString(path.Base(o.Key))}</span>
+								<span class="object-icon object-icon-file" aria-hidden="true">📄</span><span>{templ.EscapeString(path.Base(o.Key))}</span>
 							</span>
 						</td>
-						<td>{o.Size}</td>
+						<td>{humanize.IBytes(uint64(o.Size))}</td>
 						<td>{o.LastModified}</td>
 					</tr>
 			}
