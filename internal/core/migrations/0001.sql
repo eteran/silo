@@ -4,8 +4,6 @@ PRAGMA foreign_keys = ON;
 -- The buckets table stores metadata about each bucket.
 -- The objects table stores metadata about each object stored in a bucket.
 -- Each object is identified by its bucket and key.
--- The parent field in the objects table is used to support
--- hierarchical listings of objects within a bucket.
 -- The hash field stores the SHA-256 hash of the object's content
 -- for integrity verification.
 -- The size field stores the size of the object in bytes.
@@ -18,7 +16,6 @@ CREATE TABLE IF NOT EXISTS buckets (
 CREATE TABLE IF NOT EXISTS objects (
     bucket TEXT NOT NULL,
     key TEXT NOT NULL,
-    parent TEXT NOT NULL,
     hash TEXT NOT NULL,
     size INTEGER NOT NULL,
     content_type TEXT,
@@ -28,10 +25,8 @@ CREATE TABLE IF NOT EXISTS objects (
     FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
 );
 
--- Create indexes used for lookups by content hash and for efficient
--- prefix-based listings (bucket + parent + key).
+-- Create indexes used for lookups by content hash.
 CREATE INDEX IF NOT EXISTS idx_objects_hash ON objects(hash);
-CREATE INDEX IF NOT EXISTS idx_objects_parent ON objects(bucket, parent, key);
 
 -- Bucket tags store simple key/value metadata associated with buckets.
 -- Tags are scoped to a bucket and uniquely identified by their key.

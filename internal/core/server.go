@@ -168,22 +168,6 @@ func writeS3Error(w http.ResponseWriter, code string, message string, resource s
 	})
 }
 
-// parentPrefixForKey returns the immediate parent prefix for a given S3
-// object key. For example:
-//
-//	"a/b/c.txt" -> "a/b/"
-//	"file.txt"  -> ""
-//	"dir/"      -> "" (treated as a top-level key whose name ends with '/')
-func parentPrefixForKey(key string) string {
-	trimmed := strings.TrimRight(key, "/")
-	idx := strings.LastIndex(trimmed, "/")
-	if idx == -1 {
-		return ""
-	}
-	// Include the trailing slash from the original key up to and including idx.
-	return key[:idx+1]
-}
-
 // isValidBucketName implements the standard S3 bucket naming rules for
 // "virtual hosted-style" buckets.
 func isValidBucketName(name string) bool {
@@ -257,17 +241,16 @@ func createETag(hashHex string) string {
 }
 
 // upsertObjectMetadata inserts or updates an object's metadata row.
-func (s *Server) upsertObjectMetadata(ctx context.Context, bucket, key, parent, hashHex string, size int64, contentType any, now time.Time) error {
+func (s *Server) upsertObjectMetadata(ctx context.Context, bucket, key, hashHex string, size int64, contentType any, now time.Time) error {
 	_, err := s.Db.ExecContext(ctx,
-		`INSERT INTO objects(bucket, key, parent, hash, size, content_type, created_at, modified_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO objects(bucket, key, hash, size, content_type, created_at, modified_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bucket, key) DO UPDATE SET
-		 	parent=excluded.parent,
 		 	hash=excluded.hash,
 		 	size=excluded.size,
 		 	content_type=excluded.content_type,
 		 	modified_at=excluded.modified_at`,
-		bucket, key, parent, hashHex, size, contentType, now, now,
+		bucket, key, hashHex, size, contentType, now, now,
 	)
 	return err
 }
@@ -689,10 +672,9 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 		contentType = "application/octet-stream"
 	}
 
-	parent := parentPrefixForKey(key)
 	now := time.Now().UTC()
 
-	if err := s.upsertObjectMetadata(r.Context(), bucket, key, parent, hashHex, length, contentType, now); err != nil {
+	if err := s.upsertObjectMetadata(ctx, bucket, key, hashHex, length, contentType, now); err != nil {
 		slog.Error("Upsert object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -1224,15 +1206,13 @@ func (s *Server) handleCopyObject(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 
-	parent := parentPrefixForKey(destKey)
 	now := time.Now().UTC()
 
 	var ct any
 	if contentType.Valid {
 		ct = contentType.String
 	}
-
-	if err := s.upsertObjectMetadata(ctx, destBucket, destKey, parent, hashHex, size, ct, now); err != nil {
+	if err := s.upsertObjectMetadata(ctx, destBucket, destKey, hashHex, size, ct, now); err != nil {
 		slog.Error("Upsert dest object metadata for copy", "destBucket", destBucket, "destKey", destKey, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
