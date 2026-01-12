@@ -209,7 +209,7 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.Cfg.DataDir, "objects", subdir, hashHex)
+	objPath := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
 
 	_, err = os.Stat(objPath)
 	require.NoErrorf(t, err, "expected object file at %s", objPath)
@@ -768,7 +768,7 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	path := filepath.Join(srv.Cfg.DataDir, "objects", subdir, hashHex)
+	path := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
 
 	info, err := os.Stat(path)
 	require.NoError(t, err, "expected payload file to exist")
@@ -798,7 +798,7 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.Cfg.DataDir, "objects", subdir, hashHex)
+	objPath := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
 	require.NoError(t, os.Remove(objPath), "removing payload file")
 
 	// GET should now fail with 500 Internal Server Error due to missing payload.
@@ -892,7 +892,7 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
 	subdir := hashHex[:2]
-	srcPath := filepath.Join(srv.Cfg.DataDir, "objects", subdir, hashHex)
+	srcPath := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
 	require.NoError(t, os.Remove(srcPath), "removing source payload file")
 
 	// Attempt to CopyObject; metadata exists but payload is gone.

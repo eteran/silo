@@ -43,8 +43,8 @@ type Config struct {
 
 // Server provides a minimal S3-compatible HTTP API.
 type Server struct {
-	Cfg Config
-	Db  *sql.DB
+	Config Config
+	Db     *sql.DB
 }
 
 // initSchema initializes the metadata database schema by applying all
@@ -97,7 +97,7 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 		cfg.Engine = storage.NewLocalFileStorage(cfg.DataDir)
 	}
 
-	return &Server{Cfg: cfg, Db: db}, nil
+	return &Server{Config: cfg, Db: db}, nil
 }
 
 // Close closes any resources held by the Server.
@@ -611,7 +611,7 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 			return
 		}
 
-		tmpDir := filepath.Join(s.Cfg.DataDir, "tmp")
+		tmpDir := filepath.Join(s.Config.DataDir, "tmp")
 		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 			slog.Error("Error creating temp dir for streaming upload", "path", tmpDir, "err", err)
 			writeS3Error(w, "InternalError", "Error creating temp dir for streaming upload", r.URL.Path, http.StatusInternalServerError)
@@ -641,7 +641,7 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 			return
 		}
 
-		if err := s.Cfg.Engine.PutObjectFromFile(bucket, hash, tempPath.Name(), size); err != nil {
+		if err := s.Config.Engine.PutObjectFromFile(bucket, hash, tempPath.Name(), size); err != nil {
 			slog.Error("Store object payload from file", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 			return
@@ -660,7 +660,7 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 
 		sum := sha256.Sum256(data)
 		hashHex = hex.EncodeToString(sum[:])
-		if err := s.Cfg.Engine.PutObject(bucket, hashHex, data); err != nil {
+		if err := s.Config.Engine.PutObject(bucket, hashHex, data); err != nil {
 			slog.Error("Store object payload", "bucket", bucket, "key", key, "err", err)
 			writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 			return
@@ -922,7 +922,7 @@ func (s *Server) handleGetObject(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 
-	data, err := s.Cfg.Engine.GetObject(bucket, hashHex)
+	data, err := s.Config.Engine.GetObject(bucket, hashHex)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "object payload missing", http.StatusInternalServerError)
@@ -988,7 +988,7 @@ func (s *Server) handleGetBucketLocation(ctx context.Context, w http.ResponseWri
 
 	resp := LocationConstraint{
 		XMLNS:  S3XMLNamespace,
-		Region: s.Cfg.Region,
+		Region: s.Config.Region,
 	}
 
 	if err := writeXMLResponse(w, resp); err != nil {
