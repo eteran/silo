@@ -138,12 +138,12 @@ func HmacSHA256(key []byte, data string) []byte {
 }
 
 // AuthenticateRequest checks the Authorization header for valid Basic Auth
-// credentials. It returns true if the credentials are valid, false otherwise.
-func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Request) (bool, error) {
+// credentials. It returns a User object if the credentials are valid, nil otherwise.
+func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Request) (*User, error) {
 
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, AWSv4Prefix) {
-		return false, nil
+		return nil, nil
 	}
 	params := strings.TrimSpace(strings.TrimPrefix(auth, AWSv4Prefix))
 	parts := strings.Split(params, ",")
@@ -166,12 +166,12 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 	signedHeadersStr, okSigned := kv["SignedHeaders"]
 	signatureHex, okSig := kv["Signature"]
 	if !okCred || !okSigned || !okSig {
-		return false, nil
+		return nil, nil
 	}
 
 	credParts := strings.Split(credStr, "/")
 	if len(credParts) != 5 {
-		return false, nil
+		return nil, nil
 	}
 	accessKeyID := credParts[0]
 	dateStamp := credParts[1]
@@ -180,23 +180,23 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 	term := credParts[4]
 
 	if term != "aws4_request" {
-		return false, nil
+		return nil, nil
 	}
 	if accessKeyID != e.AccessKeyID {
-		return false, nil
+		return nil, nil
 	}
 	if region == "" || service == "" {
-		return false, nil
+		return nil, nil
 	}
 
 	amzDate := r.Header.Get("X-Amz-Date")
 	if amzDate == "" {
-		return false, nil
+		return nil, nil
 	}
 
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
-		return false, nil
+		return nil, nil
 	}
 
 	signedHeaderNames := strings.Split(signedHeadersStr, ";")
@@ -223,8 +223,15 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 
 	decodedSignature, err := hex.DecodeString(signatureHex)
 	if err != nil {
-		return false, nil
+		return nil, nil
 	}
 
-	return hmac.Equal(computedSignature, decodedSignature), nil
+	if !hmac.Equal(computedSignature, decodedSignature) {
+		return nil, nil
+	}
+
+	return &User{
+		AccessKeyID: accessKeyID,
+	}, nil
+
 }

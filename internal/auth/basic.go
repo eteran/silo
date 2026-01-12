@@ -26,22 +26,28 @@ func NewBasicAuthEngine() *BasicAuthEngine {
 }
 
 // AuthenticateRequest checks the Authorization header for valid Basic Auth
-// credentials. It returns true if the credentials are valid, false otherwise.
-func (e *BasicAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Request) (bool, error) {
+// credentials. It returns a User object if the credentials are valid, nil otherwise.
+func (e *BasicAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Request) (*User, error) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, BasicAuthPrefix) {
-		return false, nil
+		return nil, nil
 	}
 
 	payload, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len(BasicAuthPrefix):]))
 	if err != nil {
-		return false, nil
+		return nil, nil
 	}
 
 	creds := strings.SplitN(string(payload), ":", 2)
 	if len(creds) != 2 {
-		return false, nil
+		return nil, nil
 	}
 
-	return creds[0] == e.AccessKeyID && creds[1] == e.SecretAccessKey, nil
+	if creds[0] != e.AccessKeyID || creds[1] != e.SecretAccessKey {
+		return nil, nil
+	}
+
+	return &User{
+		AccessKeyID: creds[0],
+	}, nil
 }

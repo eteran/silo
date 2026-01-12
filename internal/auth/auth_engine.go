@@ -5,11 +5,15 @@ import (
 	"net/http"
 )
 
+type User struct {
+	AccessKeyID string
+}
+
 type AuthEngine interface {
 
 	// AuthenticateRequest inspects the given HTTP request for valid
-	// authentication credentials. If valid, it returns true; otherwise, it
-	// returns false. An error is returned if there was an issue processing
+	// authentication credentials. If valid, it returns a User object; otherwise, it
+	// returns nil. An error is returned if there was an issue processing
 	// the authentication.
-	AuthenticateRequest(ctx context.Context, rq *http.Request) (bool, error)
+	AuthenticateRequest(ctx context.Context, rq *http.Request) (*User, error)
 }
