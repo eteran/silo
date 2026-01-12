@@ -227,7 +227,7 @@ func isValidObjectKey(key string) bool {
 
 // validateBucketNameOrError writes an S3 InvalidBucketName error and returns
 // false if the provided name does not meet S3 bucket naming rules.
-func validateBucketNameOrError(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) bool {
+func validateBucketNameOrError(w http.ResponseWriter, r *http.Request, bucket string) bool {
 	if !isValidBucketName(bucket) {
 		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", r.URL.Path, http.StatusBadRequest)
 		return false
@@ -236,7 +236,7 @@ func validateBucketNameOrError(ctx context.Context, w http.ResponseWriter, r *ht
 }
 
 // validateObjectKeyOrError writes an S3-style error for invalid object keys.
-func validateObjectKeyOrError(ctx context.Context, w http.ResponseWriter, r *http.Request, key string) bool {
+func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string) bool {
 	if !isValidObjectKey(key) {
 		writeS3Error(w, "InvalidObjectName", "The specified key is not valid.", r.URL.Path, http.StatusBadRequest)
 		return false
@@ -245,7 +245,7 @@ func validateObjectKeyOrError(ctx context.Context, w http.ResponseWriter, r *htt
 }
 
 // writeXMLResponse encodes v as XML and writes it to w with a 200 OK status.
-func writeXMLResponse(ctx context.Context, w http.ResponseWriter, v any) error {
+func writeXMLResponse(w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	return xml.NewEncoder(w).Encode(v)
@@ -351,7 +351,7 @@ func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decod
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
 // and various bucket configuration APIs.
 func (s *Server) handleBucketPut(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
@@ -380,7 +380,7 @@ func (s *Server) handleBucketPut(ctx context.Context, w http.ResponseWriter, r *
 
 // handleBucketPost implements POST /bucket[?subresource], such as DeleteObjects.
 func (s *Server) handleBucketPost(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
@@ -396,7 +396,7 @@ func (s *Server) handleBucketPost(ctx context.Context, w http.ResponseWriter, r 
 // handleBucketGet dispatches GET /bucket[?subresource] between ListObjects
 // and bucket-level read APIs.
 func (s *Server) handleBucketGet(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
@@ -433,7 +433,7 @@ func (s *Server) handleBucketGet(ctx context.Context, w http.ResponseWriter, r *
 
 // handleBucketDelete implements DELETE /bucket[?subresource].
 func (s *Server) handleBucketDelete(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
@@ -459,7 +459,7 @@ func (s *Server) handleBucketDelete(ctx context.Context, w http.ResponseWriter, 
 
 // handleBucketHead implements HEAD /bucket.
 func (s *Server) handleBucketHead(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
 
@@ -482,10 +482,10 @@ func (s *Server) handleBucketHead(ctx context.Context, w http.ResponseWriter, r 
 // handleObjectPost implements POST /bucket/key[?subresource] operations such
 // as CompleteMultipartUpload, RestoreObject, and SelectObjectContent.
 func (s *Server) handleObjectPost(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(ctx, w, r, key) {
+	if !validateObjectKeyOrError(w, r, key) {
 		return
 	}
 
@@ -504,10 +504,10 @@ func (s *Server) handleObjectPost(ctx context.Context, w http.ResponseWriter, r 
 
 // handleObjectGet implements GET /bucket/key to retrieve an object.
 func (s *Server) handleObjectGet(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(ctx, w, r, key) {
+	if !validateObjectKeyOrError(w, r, key) {
 		return
 	}
 
@@ -526,10 +526,10 @@ func (s *Server) handleObjectGet(ctx context.Context, w http.ResponseWriter, r *
 
 // handleObjectDelete implements DELETE /bucket/key to delete an object.
 func (s *Server) handleObjectDelete(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(ctx, w, r, key) {
+	if !validateObjectKeyOrError(w, r, key) {
 		return
 	}
 
@@ -546,10 +546,10 @@ func (s *Server) handleObjectDelete(ctx context.Context, w http.ResponseWriter, 
 
 // handleObjectPut implements PUT /bucket/key to store an object.
 func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(ctx, w, r, key) {
+	if !validateObjectKeyOrError(w, r, key) {
 		return
 	}
 
@@ -700,10 +700,10 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 // handleObjectHead implements HEAD /bucket/key, returning metadata headers
 // compatible with S3 but without a response body.
 func (s *Server) handleObjectHead(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	if !validateBucketNameOrError(ctx, w, r, bucket) {
+	if !validateBucketNameOrError(w, r, bucket) {
 		return
 	}
-	if !validateObjectKeyOrError(ctx, w, r, key) {
+	if !validateObjectKeyOrError(w, r, key) {
 		return
 	}
 
@@ -861,7 +861,7 @@ func (s *Server) handleGetObjectTagging(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if err := writeXMLResponse(ctx, w, tagging); err != nil {
+	if err := writeXMLResponse(w, tagging); err != nil {
 		slog.Error("Encode object tagging XML", "bucket", bucket, "key", key, "err", err)
 	}
 }
@@ -991,7 +991,7 @@ func (s *Server) handleGetBucketLocation(ctx context.Context, w http.ResponseWri
 		Region: s.Cfg.Region,
 	}
 
-	if err := writeXMLResponse(ctx, w, resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode bucket location XML", "bucket", bucket, "err", err)
 	}
 }
@@ -1103,7 +1103,7 @@ func (s *Server) handleGetBucketTagging(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if err := writeXMLResponse(ctx, w, tagging); err != nil {
+	if err := writeXMLResponse(w, tagging); err != nil {
 		slog.Error("Encode bucket tagging XML", "bucket", bucket, "err", err)
 	}
 }
@@ -1175,7 +1175,7 @@ func (s *Server) handleListBuckets(ctx context.Context, w http.ResponseWriter, r
 		Buckets: buckets,
 	}
 
-	if err := writeXMLResponse(ctx, w, resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list buckets XML", "err", err)
 	}
 }
@@ -1265,7 +1265,7 @@ func (s *Server) handleCopyObject(ctx context.Context, w http.ResponseWriter, r 
 		ETag:         createETag(hashHex),
 	}
 
-	if err := writeXMLResponse(ctx, w, resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode copy object XML", "destBucket", destBucket, "destKey", destKey, "err", err)
 	}
 }
@@ -1427,7 +1427,7 @@ func (s *Server) handleListObjects(ctx context.Context, w http.ResponseWriter, r
 		CommonPrefixes: commonPrefixes,
 	}
 
-	if err := writeXMLResponse(ctx, w, resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list objects XML", "bucket", bucket, "err", err)
 	}
 }
@@ -1593,7 +1593,7 @@ func (s *Server) handleListObjectsV2(ctx context.Context, w http.ResponseWriter,
 		CommonPrefixes:        commonPrefixes,
 	}
 
-	if err := writeXMLResponse(ctx, w, resp); err != nil {
+	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list objects v2 XML", "bucket", bucket, "err", err)
 	}
 }
