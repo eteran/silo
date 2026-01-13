@@ -55,21 +55,20 @@ func (e LogEntry) Request() slog.Attr {
 func (s *Server) LogRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		entry := LogEntry{
-			IP:     r.RemoteAddr,
-			Method: r.Method,
-			URL:    r.URL.String(),
-			Proto:  r.Proto,
-		}
-
 		writer := ResponseWriterWrapper{ResponseWriter: w}
 
 		start := time.Now()
 		next.ServeHTTP(&writer, r)
 		elapsed := time.Since(start).Nanoseconds()
 
-		entry.DurationMS = float64(elapsed) / float64(time.Millisecond)
-		entry.StatusCode = writer.WrittenResponseCode
+		entry := LogEntry{
+			IP:         r.RemoteAddr,
+			Method:     r.Method,
+			URL:        r.URL.String(),
+			Proto:      r.Proto,
+			DurationMS: float64(elapsed) / float64(time.Millisecond),
+			StatusCode: writer.WrittenResponseCode,
+		}
 
 		switch {
 		case writer.WrittenResponseCode >= 500:
@@ -78,20 +77,6 @@ func (s *Server) LogRequest(next http.Handler) http.Handler {
 			slog.Warn("Request", entry.User(), entry.Request())
 		default:
 			slog.Info("Request", entry.User(), entry.Request())
-		}
-
-		if false {
-			var headerAttrs []any
-			for key, values := range r.Header {
-				for _, value := range values {
-					if key == "Authorization" || key == "Cookie" {
-						value = "[REDACTED]"
-					}
-					headerAttrs = append(headerAttrs, slog.String(key, value))
-				}
-			}
-
-			slog.Debug("Request Headers", slog.Group("headers", headerAttrs...))
 		}
 	})
 }

@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/xml"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -71,7 +70,7 @@ func DoMethod(t *testing.T, method string, url string, opts ...RequestOption) *h
 	t.Helper()
 	client := http.DefaultClient
 	req, err := http.NewRequestWithContext(t.Context(), method, url, nil)
-	require.NoError(t, err, fmt.Sprintf("creating %s request", method))
+	require.NoError(t, err, "creating "+method+" request")
 	for _, opt := range opts {
 		opt(req)
 	}

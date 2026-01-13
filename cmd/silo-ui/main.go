@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"fmt"
@@ -89,7 +90,7 @@ func (s *Server) BucketContents(w http.ResponseWriter, r *http.Request) {
 		Prefix:    prefix,
 	}
 
-	var objects []ui.Object
+	objects := make([]ui.Object, 0, 64)
 	for obj := range s.client.ListObjects(ctx, bucket, opts) {
 		if obj.Err != nil {
 			// Log and skip errors for individual objects.
@@ -121,7 +122,7 @@ func (s *Server) CreateBucket(w http.ResponseWriter, r *http.Request) {
 		msg := "bucket name is required"
 		if r.Header.Get("HX-Request") == "true" {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "<p class=\"error-message\">%s</p>", html.EscapeString(msg))
+			_, _ = fmt.Fprintf(w, "<p class=\"error-message\">%s</p>", html.EscapeString(msg))
 			return
 		}
 		http.Error(w, msg, http.StatusBadRequest)
@@ -133,7 +134,7 @@ func (s *Server) CreateBucket(w http.ResponseWriter, r *http.Request) {
 		msg := fmt.Sprintf("failed to create bucket: %v", err)
 		if r.Header.Get("HX-Request") == "true" {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "<p class=\"error-message\">%s</p>", html.EscapeString(msg))
+			_, _ = fmt.Fprintf(w, "<p class=\"error-message\">%s</p>", html.EscapeString(msg))
 			return
 		}
 		http.Error(w, msg, http.StatusInternalServerError)
@@ -150,8 +151,7 @@ func (s *Server) CreateBucket(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
-func main() {
-
+func Run(ctx context.Context) error {
 	port := flag.String("port", getenv("SILO_UI_PORT", "9100"), "HTTP listen port")
 	endpoint := flag.String("s3-endpoint", getenv("SILO_UI_S3_ENDPOINT", "localhost:9000"), "S3 / Silo API endpoint (host:port)")
 	accessKey := flag.String("s3-access-key", getenv("SILO_UI_S3_ACCESS_KEY", "minioadmin"), "S3 access key")
@@ -174,16 +174,14 @@ func main() {
 		Secure: *useSSL,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create S3 client: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
 	mux := http.NewServeMux()
 	// Serve embedded static assets from /static/
 	staticContent, err := fs.Sub(staticFS, "static")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to prepare static filesystem: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to access embedded static assets: %w", err)
 	}
 
 	server := &Server{
@@ -196,7 +194,7 @@ func main() {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticContent))))
 
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%s", *port),
+		Addr:              ":" + *port,
 		Handler:           mux,
 		ReadHeaderTimeout: 15 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -205,7 +203,15 @@ func main() {
 
 	slog.Info("Starting Silo UI server", "port", *port, "s3_endpoint", *endpoint)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("Silo UI server exited with error", "err", err)
+		return fmt.Errorf("silo UI server failed: %w", err)
+	}
+
+	return nil
+}
+
+func main() {
+	if err := Run(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
