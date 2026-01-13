@@ -1,11 +1,15 @@
 package main
 
 import (
+	"embed"
 	"flag"
 	"fmt"
+	"html"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -13,6 +17,11 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"silo/internal/ui"
+)
+
+var (
+	//go:embed static
+	staticFS embed.FS
 )
 
 // getenv returns the value of the environment variable named by key or
@@ -100,6 +109,47 @@ func (s *Server) BucketContents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) CreateBucket(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, fmt.Sprintf("failed to parse form: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		msg := "bucket name is required"
+		if r.Header.Get("HX-Request") == "true" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "<p class=\"error-message\">%s</p>", html.EscapeString(msg))
+			return
+		}
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+
+	if err := s.client.MakeBucket(ctx, name, minio.MakeBucketOptions{}); err != nil {
+		slog.Error("failed to create bucket", "bucket", name, "err", err)
+		msg := fmt.Sprintf("failed to create bucket: %v", err)
+		if r.Header.Get("HX-Request") == "true" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "<p class=\"error-message\">%s</p>", html.EscapeString(msg))
+			return
+		}
+		http.Error(w, msg, http.StatusInternalServerError)
+		return
+	}
+
+	redirectURL := fmt.Sprintf("/bucket/%s/", name)
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", redirectURL)
+		w.WriteHeader(http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
 func main() {
 
 	port := flag.String("port", getenv("SILO_UI_PORT", "9100"), "HTTP listen port")
@@ -129,13 +179,21 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	// Serve embedded static assets from /static/
+	staticContent, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to prepare static filesystem: %v\n", err)
+		os.Exit(1)
+	}
 
 	server := &Server{
 		client: client,
 	}
 
-	mux.HandleFunc("/", server.Home)
-	mux.HandleFunc("/bucket/{bucket}/{key...}", server.BucketContents)
+	mux.HandleFunc("GET /{$}", server.Home)
+	mux.HandleFunc("GET /bucket/{bucket}/{key...}", server.BucketContents)
+	mux.HandleFunc("POST /buckets", server.CreateBucket)
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticContent))))
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%s", *port),
@@ -150,13 +208,4 @@ func main() {
 		slog.Error("Silo UI server exited with error", "err", err)
 		os.Exit(1)
 	}
-}
-
-func containsRune(s string, r rune) bool {
-	for _, c := range s {
-		if c == r {
-			return true
-		}
-	}
-	return false
 }

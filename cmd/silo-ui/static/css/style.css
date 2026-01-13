@@ -1,0 +1,101 @@
+/* Reset the scaling a bit, pico looks great, but is a bit too large for my taste */
+
+:root {
+  --pico-form-element-spacing-vertical: 0.35rem;
+  --pico-form-element-spacing-horizontal: 0.75rem;
+  --pico-font-size: 1rem;
+}
+
+
+/* Silo UI specific styles */
+body {
+    margin: 0;
+}
+
+.app-shell {
+    display: flex;
+    min-height: 100vh;
+}
+
+.sidebar {
+    width: 260px;
+    border-right: 1px solid var(--pico-muted-border-color);
+    padding: 1rem;
+    box-sizing: border-box;
+}
+
+.sidebar h2 {
+    margin-top: 0;
+    font-size: 1rem;
+}
+
+.bucket-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.bucket-list li+li {
+    margin-top: 0.25rem;
+}
+
+.bucket-link {
+    display: block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    text-decoration: none;
+}
+
+.bucket-link.active {
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+}
+
+.main-area {
+    flex: 1;
+    padding: 1rem 1.5rem;
+    box-sizing: border-box;
+    overflow-x: auto;
+}
+
+.object-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    text-decoration: none;
+}
+
+.object-icon {
+    font-size: 0.9em;
+}
+
+.object-icon-folder {
+    color: var(--pico-primary);
+}
+
+.object-icon-file {
+    color: var(--pico-muted-color);
+}
+
+.error-message {
+    color: var(--pico-del-color, #b00020);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.new-bucket-button {
+    width: 100%;
+    margin-bottom: 0.75rem;
+}
+
+.new-bucket-modal form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.new-bucket-modal footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}

@@ -94,104 +94,72 @@ templ ObjectsContents(bucket string, prefix string, objects []Object) {
         </tbody></table>
     }
     </section>
-
 }
 
 templ BucketsPage(buckets []Bucket) {
-	@LayoutWithSidebar("Silo Browser - Buckets", buckets, "", BucketsContents())
+	@Layout("Silo Browser - Buckets", buckets, "", BucketsContents())
 }
 
 templ ObjectsPage(buckets []Bucket, bucket string, prefix string, objects []Object) {
-	@LayoutWithSidebar(fmt.Sprintf("Silo Browser - %s", templ.EscapeString(bucket)), buckets, bucket, ObjectsContents(bucket, prefix, objects))
+	@Layout(fmt.Sprintf("Silo Browser - %s", templ.EscapeString(bucket)), buckets, bucket, ObjectsContents(bucket, prefix, objects))
 }
 
-// LayoutWithSidebar renders a full HTML page with a left-hand bucket
+
+templ Sidebar(buckets []Bucket, selectedBucket string) {
+	<aside class="sidebar">
+		<button type="button" class="contrast new-bucket-button" onclick="document.getElementById('new-bucket-modal').showModal()">+ New Bucket</button>
+		<dialog id="new-bucket-modal" class="new-bucket-modal">
+			<article>
+				<header>
+					<h3>Create New Bucket</h3>
+				</header>
+				<form method="post" action="/buckets" hx-post="/buckets" hx-target="#new-bucket-error" hx-swap="innerHTML">
+					<label>
+						Bucket name
+						<input name="name" type="text" required minlength="3" maxlength="63" pattern="[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]" placeholder="my-bucket" />
+					</label>
+					<div id="new-bucket-error" class="error-message" role="alert"></div>
+					<footer>
+						<button type="submit" class="primary">Create</button>
+						<button type="button" class="secondary" onclick="document.getElementById('new-bucket-modal').close()">Cancel</button>
+					</footer>
+				</form>
+			</article>
+		</dialog>
+		<h2>Buckets</h2>
+		<hr />
+		if len(buckets) == 0 {
+			<p><small>No buckets found.</small></p>
+		} else {
+			<ul class="bucket-list">
+			for _, b := range buckets {
+				<li>
+					<a class={fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name == selectedBucket))} href={fmt.Sprintf("/bucket/%s/", templ.EscapeString(b.Name))}><span class="object-icon object-icon-bucket" aria-hidden="true">🪣</span> {b.Name}</a>
+				</li>
+			}
+			</ul>
+		}
+	</aside>
+}
+
+// Layout renders a full HTML page with a left-hand bucket
 // list and a main content area.
-templ LayoutWithSidebar(title string, buckets []Bucket, selectedBucket string, body templ.Component) {
+templ Layout(title string, buckets []Bucket, selectedBucket string, body templ.Component) {
 	<!DOCTYPE html>
-	<html lang="en">
+	<html lang="en" data-theme="dark">
 	<head>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light dark">
 		<title>{title}</title>
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.colors.min.css">
 		<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
-		<script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-srD8tA5lZgUlAXb/DvBy1UG775H8sG8vyXK3w63U1zrtRXkuTDIaTzGvX2UksI0M" crossorigin="anonymous"></script>
-		<style>
-			body {
-				margin: 0;
-			}
-			.app-shell {
-				display: flex;
-				min-height: 100vh;
-			}
-			.sidebar {
-				width: 260px;
-				border-right: 1px solid var(--pico-muted-border-color);
-				padding: 1rem;
-				box-sizing: border-box;
-			}
-			.sidebar h2 {
-				margin-top: 0;
-				font-size: 1rem;
-			}
-			.bucket-list {
-				list-style: none;
-				padding: 0;
-				margin: 0;
-			}
-			.bucket-list li + li {
-				margin-top: 0.25rem;
-			}
-			.bucket-link {
-				font-size: .8em;
-				display: block;
-				padding: 0.25rem 0.5rem;
-				border-radius: 0.25rem;
-				text-decoration: none;
-			}
-			.bucket-link.active {
-				background: var(--pico-primary-background);
-				color: var(--pico-primary-inverse);
-			}
-			.main-area {
-				flex: 1;
-				padding: 1rem 1.5rem;
-				box-sizing: border-box;
-				overflow-x: auto;
-			}
-			.object-link {
-				display: inline-flex;
-				align-items: center;
-				gap: 0.35rem;
-				text-decoration: none;
-			}
-			.object-icon {
-				font-size: 0.9em;
-			}
-			.object-icon-folder {
-				color: var(--pico-primary);
-			}
-			.object-icon-file {
-				color: var(--pico-muted-color);
-			}
-		</style>
+		<link rel="stylesheet" href="/static/css/style.css">
+		<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js" integrity="sha384-/TgkGk7p307TH7EXJDuUlgG3Ce1UVolAOFopFekQkkXihi5u/6OCvVKyz1W+idaz" crossorigin="anonymous"></script>
 	</head>
 	<body hx-boost="true">
 		<div class="app-shell">
-			<aside class="sidebar">
-				<h2>Buckets</h2>
-				if len(buckets) == 0 {
-					<p><small>No buckets found.</small></p>
-				} else {
-					<ul class="bucket-list">
-					for _, b := range buckets {
-						<li>
-							<a class={fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name == selectedBucket))} href={fmt.Sprintf("/bucket/%s", templ.EscapeString(b.Name))}><span class="object-icon object-icon-bucket" aria-hidden="true">🪣</span> {b.Name}</a>
-						</li>
-					}
-					</ul>
-				}
-			</aside>
+			@Sidebar(buckets, selectedBucket)
 			<main class="main-area">
 				@body
 			</main>
