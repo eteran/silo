@@ -76,7 +76,7 @@ templ ObjectsContents(bucket string, prefix string, objects []Object) {
 								<span>{templ.EscapeString(path.Base(o.Key))}</span>
 							</a>
 						</td>
-						<td>&nbsp;</td>
+						<td>&mdash;</td>
 						<td>&mdash;</td>
 					</tr>
 			} else {
@@ -143,6 +143,7 @@ templ LayoutWithSidebar(title string, buckets []Bucket, selectedBucket string, b
 				margin-top: 0.25rem;
 			}
 			.bucket-link {
+				font-size: .8em;
 				display: block;
 				padding: 0.25rem 0.5rem;
 				border-radius: 0.25rem;
@@ -162,6 +163,7 @@ templ LayoutWithSidebar(title string, buckets []Bucket, selectedBucket string, b
 				display: inline-flex;
 				align-items: center;
 				gap: 0.35rem;
+				text-decoration: none;
 			}
 			.object-icon {
 				font-size: 0.9em;
@@ -184,7 +186,7 @@ templ LayoutWithSidebar(title string, buckets []Bucket, selectedBucket string, b
 					<ul class="bucket-list">
 					for _, b := range buckets {
 						<li>
-							<a class={fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name == selectedBucket))} href={fmt.Sprintf("/bucket/%s", templ.EscapeString(b.Name))}>{b.Name}</a>
+							<a class={fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name == selectedBucket))} href={fmt.Sprintf("/bucket/%s", templ.EscapeString(b.Name))}><span class="object-icon object-icon-bucket" aria-hidden="true">🪣</span> {b.Name}</a>
 						</li>
 					}
 					</ul>
