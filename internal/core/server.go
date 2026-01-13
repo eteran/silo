@@ -707,7 +707,7 @@ func (s *Server) handleObjectHead(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 
-	hashHex, size, contentType, modifiedAt, err := s.lookupObjectMetadata(r.Context(), bucket, key)
+	hashHex, size, contentType, modifiedAt, err := s.lookupObjectMetadata(ctx, bucket, key)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
 		return
@@ -758,7 +758,7 @@ func (s *Server) objectExists(ctx context.Context, bucket, key string) (bool, er
 // ------ Individual API HTTP handlers ------
 
 func (s *Server) handleDeleteObject(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	_, err := s.Db.ExecContext(r.Context(), `DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
+	_, err := s.Db.ExecContext(ctx, `DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
 	if err != nil {
 		slog.Error("Delete object metadata", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -777,7 +777,7 @@ func (s *Server) handleDeleteObject(ctx context.Context, w http.ResponseWriter, 
 func (s *Server) handlePutObjectTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 
 	// Ensure object exists.
-	if exists, err := s.objectExists(r.Context(), bucket, key); err != nil {
+	if exists, err := s.objectExists(ctx, bucket, key); err != nil {
 		slog.Error("Put object tagging lookup", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -837,7 +837,7 @@ func (s *Server) handlePutObjectTagging(ctx context.Context, w http.ResponseWrit
 // current set of tags associated with an object.
 func (s *Server) handleGetObjectTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 	// Ensure object exists.
-	if exists, err := s.objectExists(r.Context(), bucket, key); err != nil {
+	if exists, err := s.objectExists(ctx, bucket, key); err != nil {
 		slog.Error("Get object tagging lookup", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -846,7 +846,7 @@ func (s *Server) handleGetObjectTagging(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	rows, err := s.Db.QueryContext(r.Context(), `SELECT tag_key, tag_value FROM object_tags WHERE bucket = ? AND key = ? ORDER BY tag_key`, bucket, key)
+	rows, err := s.Db.QueryContext(ctx, `SELECT tag_key, tag_value FROM object_tags WHERE bucket = ? AND key = ? ORDER BY tag_key`, bucket, key)
 	if err != nil {
 		slog.Error("Query object tags", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -879,7 +879,7 @@ func (s *Server) handleGetObjectTagging(ctx context.Context, w http.ResponseWrit
 func (s *Server) handleDeleteObjectTagging(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
 
 	// Ensure object exists.
-	if exists, err := s.objectExists(r.Context(), bucket, key); err != nil {
+	if exists, err := s.objectExists(ctx, bucket, key); err != nil {
 		slog.Error("Delete object tagging lookup", "bucket", bucket, "key", key, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -905,7 +905,7 @@ func (s *Server) handleDeleteObjectTagging(ctx context.Context, w http.ResponseW
 }
 
 func (s *Server) handleGetObject(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
-	hashHex, size, contentType, modifiedAt, err := s.lookupObjectMetadata(r.Context(), bucket, key)
+	hashHex, size, contentType, modifiedAt, err := s.lookupObjectMetadata(ctx, bucket, key)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		writeS3Error(w, "NoSuchKey", "The specified key does not exist.", r.URL.Path, http.StatusNotFound)
@@ -1076,7 +1076,7 @@ func (s *Server) handleGetBucketTagging(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	rows, err := s.Db.QueryContext(r.Context(), `SELECT key, value FROM bucket_tags WHERE bucket = ? ORDER BY key`, bucket)
+	rows, err := s.Db.QueryContext(ctx, `SELECT key, value FROM bucket_tags WHERE bucket = ? ORDER BY key`, bucket)
 	if err != nil {
 		slog.Error("Query bucket tags", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
@@ -1270,7 +1270,7 @@ func (s *Server) handleDeleteBucket(ctx context.Context, w http.ResponseWriter, 
 	}
 
 	// Delete the bucket row; foreign-key cascade removes its objects.
-	if _, err := s.Db.ExecContext(r.Context(), `DELETE FROM buckets WHERE name = ?`, bucket); err != nil {
+	if _, err := s.Db.ExecContext(ctx, `DELETE FROM buckets WHERE name = ?`, bucket); err != nil {
 		slog.Error("Delete bucket metadata", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
 		return
@@ -1463,7 +1463,7 @@ func (s *Server) handleListObjectsV2(ctx context.Context, w http.ResponseWriter,
 	query += " ORDER BY key LIMIT ?"
 	args = append(args, maxKeys+1)
 
-	rows, err := s.Db.QueryContext(r.Context(), query, args...)
+	rows, err := s.Db.QueryContext(ctx, query, args...)
 	if err != nil {
 		slog.Error("List objects v2", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
