@@ -5,6 +5,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -143,7 +145,7 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, AWSv4Prefix) {
-		return nil, nil
+		return nil, errors.New("missing or invalid Authorization header")
 	}
 	params := strings.TrimSpace(strings.TrimPrefix(auth, AWSv4Prefix))
 	parts := strings.Split(params, ",")
@@ -166,12 +168,12 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 	signedHeadersStr, okSigned := kv["SignedHeaders"]
 	signatureHex, okSig := kv["Signature"]
 	if !okCred || !okSigned || !okSig {
-		return nil, nil
+		return nil, errors.New("missing required Authorization parameters")
 	}
 
 	credParts := strings.Split(credStr, "/")
 	if len(credParts) != 5 {
-		return nil, nil
+		return nil, errors.New("invalid Credential format in Authorization header")
 	}
 	accessKeyID := credParts[0]
 	dateStamp := credParts[1]
@@ -180,23 +182,23 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 	term := credParts[4]
 
 	if term != "aws4_request" {
-		return nil, nil
+		return nil, errors.New("invalid Credential termination string in Authorization header")
 	}
 	if accessKeyID != e.AccessKeyID {
-		return nil, nil
+		return nil, errors.New("invalid Access Key ID in Authorization header")
 	}
 	if region == "" || service == "" {
-		return nil, nil
+		return nil, errors.New("missing region or service in Credential")
 	}
 
 	amzDate := r.Header.Get("X-Amz-Date")
 	if amzDate == "" {
-		return nil, nil
+		return nil, errors.New("missing X-Amz-Date header")
 	}
 
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
-		return nil, nil
+		return nil, errors.New("missing X-Amz-Content-Sha256 header")
 	}
 
 	signedHeaderNames := strings.Split(signedHeadersStr, ";")
@@ -223,11 +225,11 @@ func (e *AwsHmacAuthEngine) AuthenticateRequest(ctx context.Context, r *http.Req
 
 	decodedSignature, err := hex.DecodeString(signatureHex)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("error decoding signature string: %w", err)
 	}
 
 	if !hmac.Equal(computedSignature, decodedSignature) {
-		return nil, nil
+		return nil, errors.New("HMAC signature mismatch")
 	}
 
 	return &User{

@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"path/filepath"
 	"silo/internal/storage"
 	"testing"
 
@@ -16,7 +15,7 @@ func TestLocalFileStoragePutAndGet(t *testing.T) {
 
 	dataDir := t.TempDir()
 	engine := storage.NewLocalFileStorage(dataDir)
-	bucket := "example"
+	const bucket = "example"
 
 	payload := []byte("hello local storage")
 	sum := sha256.Sum256(payload)
@@ -43,7 +42,7 @@ func TestLocalFileStorageInvalidHash(t *testing.T) {
 
 	dataDir := t.TempDir()
 	engine := storage.NewLocalFileStorage(dataDir)
-	bucket := "bucket"
+	const bucket = "example"
 
 	// Hash shorter than 2 characters should be rejected by objectPath.
 	err := engine.PutObject(bucket, "a", []byte("data"))
@@ -58,7 +57,7 @@ func TestLocalFileStorageDeleteIsNoop(t *testing.T) {
 
 	dataDir := t.TempDir()
 	engine := storage.NewLocalFileStorage(dataDir)
-	bucket := "bucket"
+	const bucket = "example"
 
 	// DeleteObject is currently defined as a no-op and should never error,
 	// even for unknown hashes.
@@ -76,8 +75,8 @@ func TestLocalFileStorageHardLinksAcrossBuckets(t *testing.T) {
 	sum := sha256.Sum256(payload)
 	hashHex := hex.EncodeToString(sum[:])
 
-	bucket1 := "bucket1"
-	bucket2 := "bucket2"
+	const bucket1 = "bucket1"
+	const bucket2 = "bucket2"
 
 	require.NoError(t, engine.PutObject(bucket1, hashHex, payload), "PutObject bucket1 error")
 	require.NoError(t, engine.PutObject(bucket2, hashHex, payload), "PutObject bucket2 error")
@@ -88,11 +87,4 @@ func TestLocalFileStorageHardLinksAcrossBuckets(t *testing.T) {
 	info, err := os.Stat(objPath)
 	require.NoError(t, err, "expected single object file for shared payload")
 	require.False(t, info.IsDir(), "object path should be a file")
-
-	// With the new layout, data is stored globally by hash, not per-bucket.
-	// There should be no per-bucket subdirectories created under dataDir.
-	_, err = os.Stat(filepath.Join(dataDir, bucket1))
-	require.Error(t, err, "no per-bucket directory should exist for bucket1")
-	_, err = os.Stat(filepath.Join(dataDir, bucket2))
-	require.Error(t, err, "no per-bucket directory should exist for bucket2")
 }

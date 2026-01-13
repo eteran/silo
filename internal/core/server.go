@@ -589,10 +589,14 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 
-	// Ensure bucket exists; for convenience, auto-create if missing.
-	if _, err := s.ensureBucket(ctx, bucket); err != nil {
-		slog.Error("Ensure bucket", "bucket", bucket, "err", err)
+	// Ensure bucket exists; align behavior with S3/MinIO by
+	// returning an error instead of auto-creating missing buckets.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("Lookup bucket for put object", "bucket", bucket, "err", err)
 		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
 		return
 	}
 
@@ -1195,6 +1199,17 @@ func (s *Server) handleCopyObject(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	srcBucket, srcKey := parts[0], parts[1]
+
+	// Ensure destination bucket exists; align behavior with S3/MinIO by
+	// returning an error instead of auto-creating missing buckets.
+	if exists, err := s.bucketExists(ctx, destBucket); err != nil {
+		slog.Error("Lookup dest bucket for copy", "bucket", destBucket, "err", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, http.StatusInternalServerError)
+		return
+	} else if !exists {
+		writeS3Error(w, "NoSuchBucket", "The specified bucket does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
 
 	// Look up source object metadata.
 	hashHex, size, contentType, _, err := s.lookupObjectMetadata(ctx, srcBucket, srcKey)

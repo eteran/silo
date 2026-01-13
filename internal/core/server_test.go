@@ -13,11 +13,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"silo/internal/auth"
 	"silo/internal/core"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -188,12 +186,19 @@ func TestPutGetHeadDeleteObject(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "test-bucket"
-	key := "dir1/object.txt"
+	const (
+		bucket = "test-bucket"
+		key    = "dir1/object.txt"
+	)
 	body := []byte("hello world")
 
-	// PUT object (this will auto-create the bucket).
-	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body), WithContentType("text/plain"))
+	// Explicitly create the bucket first.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket.
+	resp = DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body), WithContentType("text/plain"))
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 	require.NotEmpty(t, resp.Header.Get("ETag"), "expected ETag header on PUT response")
@@ -229,12 +234,19 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 
 	srv, httpSrv := NewTestServer(t)
 
-	bucket := "sha-bucket"
-	key := "file.bin"
+	const (
+		bucket = "sha-bucket"
+		key    = "file.bin"
+	)
 	body := []byte("abc123")
 
-	// PUT object
-	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
+	// Create the bucket first.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket.
+	resp = DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 
@@ -253,7 +265,7 @@ func TestListObjects(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "list-bucket"
+	const bucket = "list-bucket"
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -294,7 +306,7 @@ func TestGetBucketLocation(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "location-bucket"
+	const bucket = "location-bucket"
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -318,7 +330,7 @@ func TestPutAndGetBucketTagging(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "tag-bucket"
+	const bucket = "tag-bucket"
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -371,7 +383,7 @@ func TestGetBucketTaggingNoTagSet(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "empty-tag-bucket"
+	const bucket = "empty-tag-bucket"
 
 	// Create the bucket without tags.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -405,11 +417,18 @@ func TestPutAndGetObjectTagging(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "obj-tag-bucket"
-	key := "obj.txt"
+	const (
+		bucket = "obj-tag-bucket"
+		key    = "obj.txt"
+	)
 	body := []byte("payload")
 
-	// PUT object (auto-creates bucket).
+	// Create the bucket first.
+	createResp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusOK, createResp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket.
 	putObjResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
 	defer putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
@@ -459,11 +478,18 @@ func TestGetObjectTaggingNoTagSet(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "obj-empty-tag-bucket"
-	key := "obj.txt"
+	const (
+		bucket = "obj-empty-tag-bucket"
+		key    = "obj.txt"
+	)
 	body := []byte("payload")
 
-	// PUT object (auto-creates bucket) without tags.
+	// Create the bucket first.
+	createResp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusOK, createResp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket without tags.
 	putObjResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
 	defer putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
@@ -480,11 +506,18 @@ func TestDeleteObjectTaggingRemovesTags(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "obj-delete-tag-bucket"
-	key := "obj.txt"
+	const (
+		bucket = "obj-delete-tag-bucket"
+		key    = "obj.txt"
+	)
 	body := []byte("payload")
 
-	// PUT object (auto-creates bucket).
+	// Create the bucket first.
+	createResp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusOK, createResp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket.
 	putObjResp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
 	defer putObjResp.Body.Close()
 	require.Equal(t, http.StatusOK, putObjResp.StatusCode, "PUT object status")
@@ -515,7 +548,7 @@ func TestDeleteBucketTaggingRemovesTags(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "delete-tag-bucket"
+	const bucket = "delete-tag-bucket"
 
 	// Create the bucket.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -561,13 +594,20 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 
 	srv, httpSrv := NewTestServer(t)
 
-	bucket := "copy-bucket"
-	srcKey := "src.txt"
-	dstKey := "dst.txt"
+	const (
+		bucket = "copy-bucket"
+		srcKey = "src.txt"
+		dstKey = "dst.txt"
+	)
 	body := []byte("copy-me")
 
-	// PUT source object (auto-creates bucket).
-	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+srcKey, WithContent(body))
+	// Create the bucket first.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// PUT source object into existing bucket.
+	resp = DoPut(t, httpSrv.URL+"/"+bucket+"/"+srcKey, WithContent(body))
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
 
@@ -602,12 +642,19 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 
 	srv, httpSrv := NewTestServer(t)
 
-	bucket := "missing-payload-bucket"
-	key := "file.bin"
+	const (
+		bucket = "missing-payload-bucket"
+		key    = "file.bin"
+	)
 	body := []byte("payload-to-delete")
 
-	// PUT object (auto-creates bucket and metadata).
-	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
+	// Create the bucket first.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket (creates metadata).
+	resp = DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 
@@ -629,9 +676,16 @@ func TestCopyObjectMissingSourceObjectReturnsNoSuchKey(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	srcBucket := "src-bucket-missing"
-	dstBucket := "dst-bucket-missing"
-	key := "file.bin"
+	const (
+		srcBucket = "src-bucket-missing"
+		dstBucket = "dst-bucket-missing"
+		key       = "file.bin"
+	)
+
+	// Create the destination bucket so CopyObject can validate the source.
+	createResp := DoPut(t, httpSrv.URL+"/"+dstBucket)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusOK, createResp.StatusCode, "PUT dest bucket status")
 
 	// Do not PUT any source object; CopyObject should fail with NoSuchKey.
 	copyResp := DoPut(t, httpSrv.URL+"/"+dstBucket+"/"+key,
@@ -648,8 +702,10 @@ func TestCopyObjectWithInvalidSourceHeaderReturnsInvalidRequest(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	dstBucket := "dst-bucket-invalid-source"
-	key := "file.bin"
+	const (
+		dstBucket = "dst-bucket-invalid-source"
+		key       = "file.bin"
+	)
 
 	copyResp := DoPut(t, httpSrv.URL+"/"+dstBucket+"/"+key,
 		WithHeader("x-amz-copy-source", "invalid-source"))
@@ -665,12 +721,23 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 
 	srv, httpSrv := NewTestServer(t)
 
-	srcBucket := "src-bucket-missing-payload"
-	dstBucket := "dst-bucket-missing-payload"
-	key := "file.bin"
+	const (
+		srcBucket = "src-bucket-missing-payload"
+		dstBucket = "dst-bucket-missing-payload"
+		key       = "file.bin"
+	)
 	body := []byte("payload-to-delete-for-copy")
 
-	// PUT source object.
+	// Create both source and destination buckets first.
+	srcCreateResp := DoPut(t, httpSrv.URL+"/"+srcBucket)
+	defer srcCreateResp.Body.Close()
+	require.Equal(t, http.StatusOK, srcCreateResp.StatusCode, "PUT src bucket status")
+
+	dstCreateResp := DoPut(t, httpSrv.URL+"/"+dstBucket)
+	defer dstCreateResp.Body.Close()
+	require.Equal(t, http.StatusOK, dstCreateResp.StatusCode, "PUT dst bucket status")
+
+	// PUT source object into existing source bucket.
 	resp := DoPut(t, httpSrv.URL+"/"+srcBucket+"/"+key, WithContent(body))
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT source status")
@@ -697,7 +764,7 @@ func TestListObjectsV2Pagination(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "listv2-bucket"
+	const bucket = "listv2-bucket"
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -758,7 +825,7 @@ func TestListObjectsV2PrefixAndStartAfter(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "listv2-prefix-bucket"
+	const bucket = "listv2-prefix-bucket"
 
 	// Create the bucket first.
 	resp := DoPut(t, httpSrv.URL+"/"+bucket)
@@ -880,6 +947,48 @@ func TestErrorResponsesTableDriven(t *testing.T) {
 	}
 }
 
+func TestPutObjectNoSuchBucket(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+
+	// PUT object into a bucket that does not exist should return NoSuchBucket.
+	resp := DoPut(t, httpSrv.URL+"/missing-bucket/object.txt", WithContent([]byte("data")))
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, resp.StatusCode, "PUT object status for missing bucket")
+	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, resp.Body), "expected NoSuchBucket error code")
+}
+
+func TestCopyObjectNoSuchBucketOnDestination(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+
+	const (
+		srcBucket = "src-bucket-for-dst-nosuchbucket"
+		srcKey    = "file.bin"
+		dstBucket = "missing-dst-bucket"
+	)
+
+	// Create the source bucket and upload source object.
+	createResp := DoPut(t, httpSrv.URL+"/"+srcBucket)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusOK, createResp.StatusCode, "PUT src bucket status")
+
+	putResp := DoPut(t, httpSrv.URL+"/"+srcBucket+"/"+srcKey, WithContent([]byte("payload")))
+	defer putResp.Body.Close()
+	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT src object status")
+
+	// Attempt to copy into a non-existent destination bucket.
+	copyResp := DoPut(t, httpSrv.URL+"/"+dstBucket+"/"+srcKey,
+		WithHeader("x-amz-copy-source", "/"+srcBucket+"/"+srcKey))
+	defer copyResp.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, copyResp.StatusCode, "CopyObject status for missing destination bucket")
+	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, copyResp.Body), "expected NoSuchBucket error code for destination bucket")
+}
+
 // TestUnknownRoutes ensures that requests which use unsupported HTTP methods
 // for otherwise valid paths return 405 Method Not Allowed from the standard
 // library router.
@@ -995,12 +1104,19 @@ func TestDeleteBucketRemovesMetadata(t *testing.T) {
 
 	srv, httpSrv := NewTestServer(t)
 
-	bucket := "delete-bucket"
-	key := "obj.txt"
+	const (
+		bucket = "delete-bucket"
+		key    = "obj.txt"
+	)
 	body := []byte("to-be-deleted")
 
-	// PUT object (auto-creates bucket and metadata).
-	resp := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
+	// Create the bucket first.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// PUT object into existing bucket (creates metadata).
+	resp = DoPut(t, httpSrv.URL+"/"+bucket+"/"+key, WithContent(body))
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT object status")
 
@@ -1026,7 +1142,7 @@ func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 
 	_, httpSrv := NewTestServer(t)
 
-	bucket := "missing-bucket"
+	const bucket = "missing-bucket"
 
 	resp := DoDelete(t, httpSrv.URL+"/"+bucket)
 	defer resp.Body.Close()
@@ -1034,98 +1150,4 @@ func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "DELETE bucket status")
 
 	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, resp.Body), "expected NoSuchBucket error code")
-}
-
-func signRequestSigV4(t *testing.T, r *http.Request) {
-	t.Helper()
-
-	region := "us-east-1"
-	service := "s3"
-
-	// Minimal SigV4 implementation for tests, matching the server's logic.
-	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	amzDate := now.Format("20060102T150405Z")
-	dateStamp := now.Format("20060102")
-
-	if r.Host == "" {
-		if r.URL.Host != "" {
-			r.Host = r.URL.Host
-		}
-	}
-	if r.Header.Get("Host") == "" && r.Host != "" {
-		r.Header.Set("Host", r.Host)
-	}
-
-	if r.Header.Get("X-Amz-Content-Sha256") == "" {
-		r.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
-	}
-	r.Header.Set("X-Amz-Date", amzDate)
-
-	signedHeaders := []string{"host", "x-amz-content-sha256", "x-amz-date"}
-	canonicalReq := auth.BuildCanonicalRequest(r, signedHeaders, r.Header.Get("X-Amz-Content-Sha256"))
-	crHash := sha256.Sum256([]byte(canonicalReq))
-	crHashHex := hex.EncodeToString(crHash[:])
-
-	credentialScope := strings.Join([]string{dateStamp, region, service, "aws4_request"}, "/")
-	stringToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		credentialScope,
-		crHashHex,
-	}, "\n")
-
-	kSecret := []byte("AWS4" + SecretAccessKey)
-	kDate := auth.HmacSHA256(kSecret, dateStamp)
-	kRegion := auth.HmacSHA256(kDate, region)
-	kService := auth.HmacSHA256(kRegion, service)
-	kSigning := auth.HmacSHA256(kService, "aws4_request")
-	sig := auth.HmacSHA256(kSigning, stringToSign)
-	sigHex := hex.EncodeToString(sig)
-
-	cred := strings.Join([]string{AccessKeyID, dateStamp, region, service, "aws4_request"}, "/")
-	auth := strings.Join([]string{
-		"AWS4-HMAC-SHA256 Credential=" + cred,
-		"SignedHeaders=host;x-amz-content-sha256;x-amz-date",
-		"Signature=" + sigHex,
-	}, ", ")
-
-	r.Header.Set("Authorization", auth)
-}
-
-func TestRequireAuthentication_AWSSigV4_Succeeds(t *testing.T) {
-	t.Parallel()
-
-	srv, _ := NewTestServer(t)
-
-	handler := srv.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/test-bucket", nil)
-	signRequestSigV4(t, req)
-
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
-
-	require.Equal(t, http.StatusOK, resp.Code, "expected AWS SigV4-authenticated request to succeed")
-}
-
-func TestRequireAuthentication_AWSSigV4_InvalidSignature(t *testing.T) {
-	t.Parallel()
-
-	srv, _ := NewTestServer(t)
-
-	handler := srv.RequireAuthentication(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/test-bucket", nil)
-	signRequestSigV4(t, req)
-	// Corrupt the signature.
-	req.Header.Set("Authorization", req.Header.Get("Authorization")+"0")
-
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
-
-	require.Equal(t, http.StatusForbidden, resp.Code, "expected invalid AWS SigV4 signature to be rejected")
 }
