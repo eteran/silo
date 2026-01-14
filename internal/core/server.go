@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -514,8 +516,14 @@ func (s *Server) handleObjectPost(ctx context.Context, w http.ResponseWriter, r 
 
 	q := r.URL.Query()
 	switch {
+	case q.Has("uploads"):
+		// CreateMultipartUpload
+		s.handleCreateMultipartUpload(ctx, w, r, bucket, key)
 	case q.Has("uploadId"):
-		s.writeNotImplemented(w, r, "CompleteMultipartUpload")
+		uploadID := q.Get("uploadId")
+		// CompleteMultipartUpload
+		s.handleCompleteMultipartUpload(ctx, w, r, bucket, key, uploadID)
+	case q.Has("uploadId"):
 	case q.Has("restore"):
 		s.writeNotImplemented(w, r, "RestoreObject")
 	case q.Has("select"):
@@ -561,7 +569,8 @@ func (s *Server) handleObjectDelete(ctx context.Context, w http.ResponseWriter, 
 	case q.Has("tagging"):
 		s.handleDeleteObjectTagging(ctx, w, r, bucket, key)
 	case q.Has("uploadId"):
-		s.writeNotImplemented(w, r, "AbortMultipartUpload")
+		uploadID := q.Get("uploadId")
+		s.handleAbortMultipartUpload(ctx, w, r, bucket, key, uploadID)
 	default:
 		s.handleDeleteObject(ctx, w, r, bucket, key)
 	}
@@ -582,9 +591,16 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 		if partNumber := q.Get("partNumber"); partNumber != "" {
 			if r.Header.Get("x-amz-copy-source") != "" {
 				s.writeNotImplemented(w, r, "UploadPartCopy")
-			} else {
-				s.writeNotImplemented(w, r, "UploadPart")
+				return
 			}
+
+			partNum, err := strconv.Atoi(partNumber)
+			if err != nil || partNum <= 0 {
+				writeS3Error(w, "InvalidArgument", "Invalid part number.", r.URL.Path, http.StatusBadRequest)
+				return
+			}
+
+			s.handleUploadPart(ctx, w, r, bucket, key, uploadID, partNum)
 			return
 		}
 	}
@@ -638,7 +654,7 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 			return
 		}
 
-		tmpDir := filepath.Join(s.Config.DataDir, "tmp")
+		tmpDir := filepath.Join(s.Config.DataDir, "uploads")
 		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 			slog.Error("Error creating temp dir for streaming upload", "path", tmpDir, "err", err)
 			writeInternalError(w, r)
@@ -1596,4 +1612,289 @@ func (s *Server) handleListObjectsV2(ctx context.Context, w http.ResponseWriter,
 	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list objects v2 XML", "bucket", bucket, "err", err)
 	}
+}
+
+// ------ Multipart upload handlers ------
+
+// handleCreateMultipartUpload implements CreateMultipartUpload
+// (InitiateMultipartUpload): POST /bucket/key?uploads
+func (s *Server) handleCreateMultipartUpload(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
+	// Ensure bucket exists; do not auto-create.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("Create multipart upload bucket lookup", "bucket", bucket, "err", err)
+		writeInternalError(w, r)
+		return
+	} else if !exists {
+		writeNoSuchBucketError(w, r)
+		return
+	}
+
+	uploadID := uuid.NewString()
+	uploadsRoot := filepath.Join(s.Config.DataDir, "uploads")
+	if err := os.MkdirAll(uploadsRoot, 0o755); err != nil {
+		slog.Error("Create uploads root dir", "path", uploadsRoot, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	uploadDir := filepath.Join(uploadsRoot, uploadID)
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		slog.Error("Create multipart upload dir", "path", uploadDir, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	resp := CreateMultipartUploadResult{
+		XMLNS:    S3XMLNamespace,
+		Bucket:   bucket,
+		Key:      key,
+		UploadID: uploadID,
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode create multipart upload XML", "bucket", bucket, "key", key, "err", err)
+	}
+}
+
+// handleUploadPart implements UploadPart: PUT /bucket/key?partNumber=N&uploadId=ID
+func (s *Server) handleUploadPart(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string, uploadID string, partNumber int) {
+	// Ensure bucket exists; do not auto-create.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("Upload part bucket lookup", "bucket", bucket, "err", err)
+		writeInternalError(w, r)
+		return
+	} else if !exists {
+		writeNoSuchBucketError(w, r)
+		return
+	}
+
+	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	if stat, err := os.Stat(uploadDir); err != nil || !stat.IsDir() {
+		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	partFilename := fmt.Sprintf("part-%06d", partNumber)
+	partPath := filepath.Join(uploadDir, partFilename)
+	partFile, err := os.Create(partPath)
+	if err != nil {
+		slog.Error("Create upload part file", "path", partPath, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+	defer func() {
+		if err := partFile.Close(); err != nil {
+			slog.Debug("Failed to close upload part file", "path", partPath, "err", err)
+		}
+	}()
+
+	contentSHA := r.Header.Get("X-Amz-Content-Sha256")
+	h := sha256.New()
+	var size int64
+
+	if strings.EqualFold(contentSHA, "STREAMING-AWS4-HMAC-SHA256-PAYLOAD") {
+		decodedLenStr := r.Header.Get("X-Amz-Decoded-Content-Length")
+		if decodedLenStr == "" {
+			slog.Error("Missing X-Amz-Decoded-Content-Length for streaming upload part")
+			writeS3Error(w, "InvalidRequest", "Missing X-Amz-Decoded-Content-Length for streaming payload", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		decodedLen, parseErr := strconv.ParseInt(decodedLenStr, 10, 64)
+		if parseErr != nil || decodedLen < 0 {
+			slog.Error("Invalid X-Amz-Decoded-Content-Length for upload part", "value", decodedLenStr, "err", parseErr)
+			writeS3Error(w, "InvalidRequest", "Invalid X-Amz-Decoded-Content-Length", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		// Re-use the streaming decoder to write into the part file and
+		// compute the SHA-256 hash.
+		written, hashHex, err := s.decodeStreamingPayloadToTemp(io.MultiWriter(partFile, h), r.Body, decodedLen)
+		if err != nil {
+			slog.Error("Decode streaming upload part", "bucket", bucket, "key", key, "err", err)
+			writeS3Error(w, "InvalidRequest", "Failed to decode streaming payload", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		_ = hashHex
+		size = written
+	} else {
+		// Regular (non-streaming) payload: stream to file while hashing.
+		mw := io.MultiWriter(partFile, h)
+		written, err := io.Copy(mw, r.Body)
+		if err != nil {
+			slog.Error("Write upload part payload", "bucket", bucket, "key", key, "err", err)
+			writeS3Error(w, "InvalidRequest", "Failed to read request body", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		size = written
+	}
+
+	_ = size // Size is not currently persisted per-part.
+
+	// Return a simple ETag derived from the SHA-256 of the part.
+	hashHex := hex.EncodeToString(h.Sum(nil))
+	w.Header().Set("ETag", createETag(hashHex))
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleCompleteMultipartUpload implements CompleteMultipartUpload:
+// POST /bucket/key?uploadId=ID
+func (s *Server) handleCompleteMultipartUpload(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string, uploadID string) {
+	// Ensure bucket exists; do not auto-create.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("Complete multipart upload bucket lookup", "bucket", bucket, "err", err)
+		writeInternalError(w, r)
+		return
+	} else if !exists {
+		writeNoSuchBucketError(w, r)
+		return
+	}
+
+	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	if stat, err := os.Stat(uploadDir); err != nil || !stat.IsDir() {
+		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	defer r.Body.Close()
+	var req CompleteMultipartUpload
+	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Error("Decode complete multipart upload XML", "bucket", bucket, "key", key, "err", err)
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Parts) == 0 {
+		writeS3Error(w, "InvalidRequest", "You must specify at least one part.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	uploadsRoot := filepath.Join(s.Config.DataDir, "uploads")
+	if err := os.MkdirAll(uploadsRoot, 0o755); err != nil {
+		slog.Error("Ensure uploads root for complete", "path", uploadsRoot, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	finalFile, err := os.CreateTemp(uploadsRoot, "multipart-final-*")
+	if err != nil {
+		slog.Error("Create final multipart temp file", "bucket", bucket, "key", key, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+	defer func() {
+		name := finalFile.Name()
+		if err := finalFile.Close(); err != nil {
+			slog.Debug("Failed to close final multipart file", "path", name, "err", err)
+		}
+		// Best-effort cleanup; storage engine may have moved the file.
+		if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+			slog.Debug("Failed to remove final multipart temp file", "path", name, "err", err)
+		}
+	}()
+
+	h := sha256.New()
+	var totalSize int64
+	buf := make([]byte, 32*1024)
+
+	for _, part := range req.Parts {
+		if part.PartNumber <= 0 {
+			writeS3Error(w, "InvalidArgument", "Invalid part number.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		partFilename := fmt.Sprintf("part-%06d", part.PartNumber)
+		partPath := filepath.Join(uploadDir, partFilename)
+		pf, err := os.Open(partPath)
+		if err != nil {
+			slog.Error("Open upload part file for complete", "path", partPath, "err", err)
+			writeS3Error(w, "InvalidPart", "One or more of the specified parts could not be found.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		for {
+			n, err := pf.Read(buf)
+			if n > 0 {
+				if _, werr := finalFile.Write(buf[:n]); werr != nil {
+					_ = pf.Close()
+					slog.Error("Write to final multipart file", "bucket", bucket, "key", key, "err", werr)
+					writeInternalError(w, r)
+					return
+				}
+				if _, herr := h.Write(buf[:n]); herr != nil {
+					_ = pf.Close()
+					slog.Error("Hash final multipart payload", "bucket", bucket, "key", key, "err", herr)
+					writeInternalError(w, r)
+					return
+				}
+				totalSize += int64(n)
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					_ = pf.Close()
+					slog.Error("Read upload part file", "path", partPath, "err", err)
+					writeInternalError(w, r)
+				}
+				break
+			}
+		}
+
+		if err := pf.Close(); err != nil {
+			slog.Debug("Failed to close upload part file during complete", "path", partPath, "err", err)
+		}
+	}
+
+	hashHex := hex.EncodeToString(h.Sum(nil))
+
+	// Store the completed object using the storage engine.
+	if err := s.Config.Engine.PutObjectFromFile(bucket, hashHex, finalFile.Name(), totalSize); err != nil {
+		slog.Error("Store completed multipart object", "bucket", bucket, "key", key, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	// Record object metadata.
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	now := time.Now().UTC()
+	if err := s.upsertObjectMetadata(ctx, bucket, key, hashHex, totalSize, contentType, now); err != nil {
+		slog.Error("Upsert object metadata (complete multipart)", "bucket", bucket, "key", key, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	// Best-effort cleanup of the multipart upload directory.
+	if err := os.RemoveAll(uploadDir); err != nil && !os.IsNotExist(err) {
+		slog.Debug("Failed to remove multipart upload dir", "path", uploadDir, "err", err)
+	}
+
+	resp := CompleteMultipartUploadResult{
+		XMLNS:    S3XMLNamespace,
+		Location: fmt.Sprintf("/%s/%s", bucket, key),
+		Bucket:   bucket,
+		Key:      key,
+		ETag:     createETag(hashHex),
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode complete multipart upload XML", "bucket", bucket, "key", key, "err", err)
+	}
+}
+
+// handleAbortMultipartUpload implements AbortMultipartUpload:
+// DELETE /bucket/key?uploadId=ID
+func (s *Server) handleAbortMultipartUpload(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string, uploadID string) {
+	_ = ctx
+	_ = key
+
+	// Per S3 semantics this is largely idempotent; we simply remove the
+	// temporary upload directory if it exists.
+	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	if err := os.RemoveAll(uploadDir); err != nil && !os.IsNotExist(err) {
+		slog.Debug("Failed to remove multipart upload dir on abort", "path", uploadDir, "err", err)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

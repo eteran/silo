@@ -98,6 +98,80 @@ func CopyObject(ctx context.Context, client *minio.Client, srcBucket string, src
 	return nil
 }
 
+func MultipartUploadExample(ctx context.Context, client *minio.Client) error {
+
+	const (
+		bucket = "minio-core-multipart-bucket"
+		object = "core-multipart-object.bin"
+	)
+
+	creds, err := client.GetCreds()
+	if err != nil {
+		return fmt.Errorf("failed to get client credentials: %w", err)
+	}
+
+	endpointURL := client.EndpointURL()
+
+	coreClient, err := minio.NewCore(endpointURL.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(creds.AccessKeyID, creds.SecretAccessKey, ""),
+		Secure:       false,
+		BucketLookup: minio.BucketLookupPath,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to create core client: %w", err)
+	}
+
+	// Create the bucket using the high-level MinIO client.
+	if err := coreClient.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}); err != nil {
+		return fmt.Errorf("failed to create bucket %q: %w", bucket, err)
+	}
+
+	// Initiate multipart upload.
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	if err != nil {
+		return fmt.Errorf("failed to initiate multipart upload: %w", err)
+	}
+
+	log := slog.With("bucket", bucket, "object", object, "upload_id", uploadID)
+	log.Info("Started multipart upload")
+
+	// Prepare three distinct parts and remember their combined payload.
+	partData := [][]byte{
+		bytes.Repeat([]byte("AAAA"), 256*1024), // ~1 MiB
+		bytes.Repeat([]byte("BBBB"), 256*1024),
+		bytes.Repeat([]byte("CCCC"), 128*1024), // smaller last part
+	}
+
+	var parts []minio.CompletePart
+	totalLength := 0
+
+	for i, data := range partData {
+		partNumber := i + 1
+
+		objPart, err := coreClient.PutObjectPart(ctx, bucket, object, uploadID, partNumber, bytes.NewReader(data), int64(len(data)), minio.PutObjectPartOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to upload part %d: %w", partNumber, err)
+		}
+
+		parts = append(parts, minio.CompletePart{
+			PartNumber: partNumber,
+			ETag:       objPart.ETag,
+		})
+		totalLength += len(data)
+	}
+
+	// Complete the multipart upload.
+	_, err = coreClient.CompleteMultipartUpload(ctx, bucket, object, uploadID, parts, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	if err != nil {
+		return fmt.Errorf("failed to complete multipart upload: %w", err)
+	}
+
+	log.Info("Completed multipart upload", "total_size", totalLength)
+	return nil
+
+}
+
 func Run(ctx context.Context, client *minio.Client) error {
 	// Ensure bucket exists.
 	if err := EnsureBucket(ctx, client, BucketName); err != nil {
@@ -147,6 +221,11 @@ func Run(ctx context.Context, client *minio.Client) error {
 	// 8. List the contents of the second bucket.
 	if err := ListBucketObjects(ctx, client, OtherBucket); err != nil {
 		return fmt.Errorf("failed to list bucket objects: %w", err)
+	}
+
+	// 9. Demonstrate multipart upload using low-level Core client.
+	if err := MultipartUploadExample(ctx, client); err != nil {
+		return fmt.Errorf("failed to run multipart upload example: %w", err)
 	}
 
 	return nil

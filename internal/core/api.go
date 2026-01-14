@@ -88,6 +88,41 @@ type CopyObjectResult struct {
 	ETag         string   `xml:"ETag"`
 }
 
+// CreateMultipartUploadResult represents the XML response for the
+// CreateMultipartUpload (InitiateMultipartUpload) API.
+type CreateMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+	XMLNS    string   `xml:"xmlns,attr"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	UploadID string   `xml:"UploadId"`
+}
+
+// CompletedPart represents a single part entry in a CompleteMultipartUpload
+// request body.
+type CompletedPart struct {
+	PartNumber int    `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
+}
+
+// CompleteMultipartUpload represents the XML payload sent to the
+// CompleteMultipartUpload API.
+type CompleteMultipartUpload struct {
+	XMLName xml.Name        `xml:"CompleteMultipartUpload"`
+	Parts   []CompletedPart `xml:"Part"`
+}
+
+// CompleteMultipartUploadResult represents the XML response for the
+// CompleteMultipartUpload API.
+type CompleteMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+	XMLNS    string   `xml:"xmlns,attr"`
+	Location string   `xml:"Location"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	ETag     string   `xml:"ETag"`
+}
+
 // Tag represents a single key/value tag entry.
 type Tag struct {
 	Key   string `xml:"Key"`

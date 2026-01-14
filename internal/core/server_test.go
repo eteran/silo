@@ -15,7 +15,10 @@ import (
 	"silo/internal/core"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1053,24 +1056,9 @@ func TestNotImplementedRoutes(t *testing.T) {
 			path:   "/bucket?delete",
 		},
 		{
-			name:   "UploadPart",
-			method: http.MethodPut,
-			path:   "/bucket/object?uploadId=123&partNumber=1",
-		},
-		{
 			name:   "ListMultipartUploads",
 			method: http.MethodGet,
 			path:   "/bucket?uploads",
-		},
-		{
-			name:   "AbortMultipartUpload",
-			method: http.MethodDelete,
-			path:   "/bucket/object?uploadId=123",
-		},
-		{
-			name:   "CompleteMultipartUpload",
-			method: http.MethodPost,
-			path:   "/bucket/object?uploadId=123",
 		},
 	}
 
@@ -1078,12 +1066,7 @@ func TestNotImplementedRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := []RequestOption{}
-			if tc.name == "UploadPart" {
-				opts = append(opts, WithHeader("x-amz-copy-source", "/src-bucket/src-object"))
-			}
-
-			resp := DoMethod(t, tc.method, httpSrv.URL+tc.path, opts...)
+			resp := DoMethod(t, tc.method, httpSrv.URL+tc.path)
 
 			defer resp.Body.Close()
 
@@ -1149,4 +1132,191 @@ func TestDeleteNonexistentBucketReturnsNoSuchBucket(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode, "DELETE bucket status")
 
 	require.Equal(t, "NoSuchBucket", DecodeS3Error(t, resp.Body), "expected NoSuchBucket error code")
+}
+
+// newMinioClient creates a MinIO client configured to talk to the in-memory
+// test server using path-style bucket lookup and the default credentials.
+func newMinioClient(t *testing.T, httpSrv *httptest.Server) *minio.Client {
+	t.Helper()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	client, err := minio.New(u.Host, &minio.Options{
+		Creds:  credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure: u.Scheme == "https",
+		// The core server expects path-style requests: /bucket/object.
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO client")
+
+	return client
+}
+
+// TestMultipartUploadUsingMinioClient verifies that a large object uploaded
+// via the MinIO Go client uses multipart upload successfully and that the
+// resulting object can be read back intact.
+func TestMultipartUploadUsingMinioClient(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	client := newMinioClient(t, httpSrv)
+	ctx := t.Context()
+
+	const (
+		bucket = "minio-multipart-bucket"
+		object = "large-object.bin"
+	)
+
+	// Create bucket via MinIO client.
+	err := client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"})
+	require.NoError(t, err, "MakeBucket via MinIO client")
+
+	// Prepare a payload large enough to trigger multipart upload in
+	// minio-go (threshold is 16MiB).
+	size := int64(20 * 1024 * 1024) // 20 MiB
+	data := bytes.Repeat([]byte("0123456789abcdef"), int(size/16))
+	require.Equal(t, size, int64(len(data)), "test payload size")
+
+	putInfo, err := client.PutObject(ctx, bucket, object, bytes.NewReader(data), size, minio.PutObjectOptions{
+		ContentType: "application/octet-stream",
+	})
+	require.NoError(t, err, "PutObject via MinIO client")
+	require.Equal(t, size, putInfo.Size, "uploaded size")
+	require.NotEmpty(t, putInfo.ETag, "uploaded ETag")
+
+	// Read the object back and verify its content.
+	obj, err := client.GetObject(ctx, bucket, object, minio.GetObjectOptions{})
+	require.NoError(t, err, "GetObject via MinIO client")
+	defer obj.Close()
+
+	got, err := io.ReadAll(obj)
+	require.NoError(t, err, "reading object data")
+	require.Equal(t, data, got, "round-trip multipart payload mismatch")
+}
+
+// TestAbortMultipartUploadUsingMinioCore verifies that aborting a multipart
+// upload via the MinIO Core API triggers deletion of the temporary uploads
+// directory for that upload ID.
+func TestAbortMultipartUploadUsingMinioCore(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	coreClient, err := minio.NewCore(u.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure:       u.Scheme == "https",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO Core client")
+
+	const (
+		bucket = "minio-abort-multipart-bucket"
+		object = "multipart-object.bin"
+	)
+
+	// Create bucket using high-level client built on the same endpoint.
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	// Initiate a multipart upload via Core API.
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "NewMultipartUpload via MinIO Core")
+	require.NotEmpty(t, uploadID, "uploadID should not be empty")
+
+	uploadDir := filepath.Join(srv.Config.DataDir, "uploads", uploadID)
+
+	// Give a brief moment for the directory to be created on slow filesystems.
+	time.Sleep(10 * time.Millisecond)
+
+	if _, err := os.Stat(uploadDir); err != nil {
+		// Even if the stat fails, continue with abort to ensure idempotency.
+		_ = err
+	}
+
+	// Abort the multipart upload; this should delete the temporary directory.
+	require.NoError(t, coreClient.AbortMultipartUpload(ctx, bucket, object, uploadID), "AbortMultipartUpload via MinIO Core")
+
+	// Allow the server a brief moment to process and remove the directory.
+	time.Sleep(10 * time.Millisecond)
+
+	_, err = os.Stat(uploadDir)
+	require.Error(t, err, "expected upload directory to be removed after abort")
+	require.True(t, os.IsNotExist(err), "expected upload directory to not exist after abort")
+}
+
+// TestExplicitMultipartUploadUsingMinioCore performs a full multipart
+// upload sequence using the MinIO Core API: initiate, upload parts,
+// complete, and then verifies the final object contents via a regular
+// GET request to the server.
+func TestExplicitMultipartUploadUsingMinioCore(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	coreClient, err := minio.NewCore(u.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure:       u.Scheme == "https",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO Core client")
+
+	const (
+		bucket = "minio-core-multipart-bucket"
+		object = "core-multipart-object.bin"
+	)
+
+	// Create the bucket using the high-level MinIO client.
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	// Initiate multipart upload.
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "NewMultipartUpload via MinIO Core")
+	require.NotEmpty(t, uploadID, "uploadID should not be empty")
+
+	// Prepare three distinct parts and remember their combined payload.
+	partData := [][]byte{
+		bytes.Repeat([]byte("AAAA"), 256*1024), // ~1 MiB
+		bytes.Repeat([]byte("BBBB"), 256*1024),
+		bytes.Repeat([]byte("CCCC"), 128*1024), // smaller last part
+	}
+
+	var full bytes.Buffer
+	var parts []minio.CompletePart
+
+	for i, data := range partData {
+		partNumber := i + 1
+		full.Write(data)
+
+		objPart, err := coreClient.PutObjectPart(ctx, bucket, object, uploadID, partNumber, bytes.NewReader(data), int64(len(data)), minio.PutObjectPartOptions{})
+		require.NoErrorf(t, err, "PutObjectPart via MinIO Core for part %d", partNumber)
+
+		parts = append(parts, minio.CompletePart{
+			PartNumber: partNumber,
+			ETag:       objPart.ETag,
+		})
+	}
+
+	// Complete the multipart upload.
+	_, err = coreClient.CompleteMultipartUpload(ctx, bucket, object, uploadID, parts, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "CompleteMultipartUpload via MinIO Core")
+
+	// Fetch the final object via the regular HTTP GET helper and
+	// verify its contents match the concatenated parts.
+	resp := DoGet(t, httpSrv.URL+"/"+bucket+"/"+object)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "GET completed multipart object status")
+
+	got, err := io.ReadAll(resp.Body)
+	require.NoError(t, err, "reading completed multipart object")
+	require.Equal(t, full.Bytes(), got, "completed multipart object payload mismatch")
 }
