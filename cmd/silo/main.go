@@ -4,30 +4,32 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"silo/internal/core"
-	"strconv"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"golang.org/x/sync/errgroup"
 )
 
+func getEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
 func Run(ctx context.Context) error {
 
-	ServerPortHttp := flag.String("listen", "9000", "HTTP listen address")
-	dataDir := flag.String("data-dir", "./data", "directory to store object data")
-
-	flag.Parse()
-
-	ServerPortHttps := 8443
-	ServerCrtFile := ""
-	ServerKeyFile := ""
+	SILO_HTTP_PORT := getEnv("SILO_HTTP_PORT", "9000")
+	SILO_HTTPS_PORT := getEnv("SILO_HTTPS_PORT", "9443")
+	SILO_DATA_DIR := getEnv("SILO_DATA_DIR", "./data")
+	ServerCrtFile := getEnv("SILO_SERVER_CRT_FILE", "")
+	ServerKeyFile := getEnv("SILO_SERVER_KEY_FILE", "")
 
 	handler := log.NewWithOptions(os.Stdout, log.Options{
 		Level:           log.DebugLevel,
@@ -40,7 +42,7 @@ func Run(ctx context.Context) error {
 	slog.SetDefault(slog.New(handler))
 
 	// Ensure data directory is absolute for easier debugging.
-	absDataDir, err := filepath.Abs(*dataDir)
+	absDataDir, err := filepath.Abs(SILO_DATA_DIR)
 	if err != nil {
 		return fmt.Errorf("failed to resolve data directory: %w", err)
 	}
@@ -65,7 +67,7 @@ func Run(ctx context.Context) error {
 	router := server.Handler()
 
 	httpServer := &http.Server{
-		Addr:              ":" + *ServerPortHttp,
+		Addr:              ":" + SILO_HTTP_PORT,
 		Handler:           router,
 		ReadHeaderTimeout: 20 * time.Second,
 		ReadTimeout:       20 * time.Second,
@@ -77,7 +79,7 @@ func Run(ctx context.Context) error {
 			ClientAuth: tls.RequestClientCert,
 			MinVersion: tls.VersionTLS12,
 		},
-		Addr:              ":" + strconv.Itoa(ServerPortHttps),
+		Addr:              ":" + SILO_HTTPS_PORT,
 		Handler:           router,
 		ReadHeaderTimeout: 20 * time.Second,
 		ReadTimeout:       20 * time.Second,
@@ -101,7 +103,7 @@ func Run(ctx context.Context) error {
 			return nil
 		}
 
-		slog.Info("Starting Silo HTTPS server", "port", ServerPortHttps)
+		slog.Info("Starting Silo HTTPS server", "port", SILO_HTTPS_PORT)
 		err := httpsServer.ListenAndServeTLS(ServerCrtFile, ServerKeyFile)
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
@@ -111,7 +113,7 @@ func Run(ctx context.Context) error {
 	})
 
 	eg.Go(func() error {
-		slog.Info("Starting Silo HTTP server", "port", *ServerPortHttp)
+		slog.Info("Starting Silo HTTP server", "port", SILO_HTTP_PORT)
 		err := httpServer.ListenAndServe()
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err

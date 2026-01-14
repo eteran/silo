@@ -1,191 +1,214 @@
 package ui
 
 import (
-"fmt"
-"strings"
-"path"
-"github.com/dustin/go-humanize"
+	"fmt"
+	"github.com/dustin/go-humanize"
+	"path"
+	"strings"
 )
 
 // Bucket represents a single S3 bucket for display.
 type Bucket struct {
-Name string
-CreationDate string
+	Name         string
+	CreationDate string
 }
 
 // Object represents a single object within a bucket for display.
 type Object struct {
-Key string
-Size int64
-LastModified string
+	Key          string
+	Size         int64
+	LastModified string
 }
-
-
 
 // BucketsContents is the main-area content for the root view.
 // Buckets themselves are rendered in the global sidebar; here we just
 // provide a simple welcome / empty-state panel.
 templ BucketsContents() {
-<section>
-	<header>
-		<h1>Silo Buckets</h1>
-		<p>Browse buckets and objects via the S3-compatible API.</p>
-	</header>
-	<p>Select a bucket from the left to view its objects.</p>
-</section>
+	<section>
+		<header>
+			<h1>Silo Buckets</h1>
+			<p>Browse buckets and objects via the S3-compatible API.</p>
+		</header>
+		<p>Select a bucket from the left to view its objects.</p>
+	</section>
 }
 
 templ Breadcrumbs(bucket string, prefix string) {
-<nav aria-label="breadcrumb">
-	<ul>
-		<li><a href="/">Buckets</a></li>
-		<li><a href={fmt.Sprintf("/bucket/%s", templ.EscapeString(bucket))}>{bucket}</a>
-		</li>
-		if prefix != "" {
-		{{ parts := strings.Split( strings.Trim(prefix, "/"), "/") }}
-		{{ current := "" }}
-		for _, part := range parts {
-		{{ if current == "" { current = part + "/" } else { current = current + part + "/" } }}
-		<li><a href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(current))}>{part}</a>
-		</li>
-		}
-		}
-	</ul>
-</nav>
+	<nav aria-label="breadcrumb">
+		<ul>
+			<li><a href="/">Buckets</a></li>
+			<li><a href={ fmt.Sprintf("/bucket/%s", templ.EscapeString(bucket)) }>{ bucket }</a></li>
+			if prefix != "" {
+				{{ parts := strings.Split(strings.Trim(prefix, "/"), "/") }}
+				{{ current := "" }}
+				for _, part := range parts {
+					{{
+						if current == "" {
+							current = part + "/"
+						} else {
+							current = current + part + "/"
+						}
+					}}
+					<li>
+						<a href={ fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(current)) }>{ part }</a>
+					</li>
+				}
+			}
+		</ul>
+	</nav>
 }
 
 templ ObjectsContents(bucket string, prefix string, objects []Object) {
-<section>
-	<header>
-		<h1>Bucket: {bucket}</h1>
-		@Breadcrumbs(bucket, prefix)
-	</header>
-	if len(objects) == 0 {
-	<p>No objects in this bucket.</p>
-	} else {
-	<table>
-		<thead>
-			<tr>
-				<th>Key</th>
-				<th>Size (bytes)</th>
-				<th>Last Modified</th>
-			</tr>
-		</thead>
-		<tbody>
-			for _, o := range objects {
-			// It's a directory
-			if strings.HasSuffix(o.Key, "/") {
-			<tr>
-				<td>
-					<a class="object-link" href={fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket),
-						templ.EscapeString(o.Key))}>
-						<span class="object-icon object-icon-folder" aria-hidden="true">📁</span>
-						<span>{path.Base(o.Key)}</span>
-					</a>
-				</td>
-				<td>&mdash;</td>
-				<td>&mdash;</td>
-			</tr>
-			} else {
-			<tr>
-				<td>
-					<span class="object-link">
-						<span class="object-icon object-icon-file"
-							aria-hidden="true">📄</span><span>{path.Base(o.Key)}</span>
-					</span>
-				</td>
-				<td>{humanize.IBytes(uint64(o.Size))}</td>
-				<td>{o.LastModified}</td>
-			</tr>
-			}
-			}
-		</tbody>
-	</table>
-	}
-</section>
+	<section>
+		<header>
+			<h1>Bucket: { bucket }</h1>
+			@Breadcrumbs(bucket, prefix)
+		</header>
+		if len(objects) == 0 {
+			<p>No objects in this bucket.</p>
+		} else {
+			<table>
+				<thead>
+					<tr>
+						<th>Key</th>
+						<th>Size (bytes)</th>
+						<th>Last Modified</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, o := range objects {
+						// It's a directory
+						if strings.HasSuffix(o.Key, "/") {
+							<tr>
+								<td>
+									<a class="object-link" href={ fmt.Sprintf("/bucket/%s/%s", templ.EscapeString(bucket), templ.EscapeString(o.Key)) }>
+										<span class="object-icon object-icon-folder" aria-hidden="true">📁</span>
+										<span>{ path.Base(o.Key) }</span>
+									</a>
+								</td>
+								<td>&mdash;</td>
+								<td>&mdash;</td>
+							</tr>
+						} else {
+							<tr>
+								<td>
+									<span class="object-link">
+										<span
+											class="object-icon object-icon-file"
+											aria-hidden="true"
+										>📄</span><span>{ path.Base(o.Key) }</span>
+									</span>
+								</td>
+								<td>{ humanize.IBytes(uint64(o.Size)) }</td>
+								<td>{ o.LastModified }</td>
+							</tr>
+						}
+					}
+				</tbody>
+			</table>
+		}
+	</section>
 }
 
 templ BucketsPage(buckets []Bucket) {
-@Layout("Silo Browser - Buckets", buckets, "", BucketsContents())
+	@Layout("Silo Browser - Buckets", buckets, "", BucketsContents())
 }
 
 templ ObjectsPage(buckets []Bucket, bucket string, prefix string, objects []Object) {
-@Layout(fmt.Sprintf("Silo Browser - %s", templ.EscapeString(bucket)), buckets, bucket, ObjectsContents(bucket, prefix,
-objects))
+	@Layout(fmt.Sprintf("Silo Browser - %s", templ.EscapeString(bucket)), buckets, bucket, ObjectsContents(bucket, prefix,
+		objects))
 }
 
-
 templ Sidebar(buckets []Bucket, selectedBucket string) {
-<aside class="sidebar">
-
-	<button type="button" class="contrast new-bucket-button" @click="showModal = true">+ New Bucket</button>
-	<dialog id="new-bucket-modal" class="new-bucket-modal" x-ref="modal" x-show="showModal"
-		@click.outside="showModal = false" @keydown.escape.window="showModal = false"
-		x-effect="showModal ? $refs.modal.showModal() : $refs.modal.close()">
-		<article>
-			<header>
-				<h3>Create New Bucket</h3>
-			</header>
-			<form method="post" action="/buckets" hx-post="/buckets" hx-target="#new-bucket-error" hx-swap="innerHTML">
-				<label>
-					Bucket name
-					<input name="name" type="text" required minlength="3" maxlength="63"
-						pattern="[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]" placeholder="my-bucket" />
-				</label>
-				<div id="new-bucket-error" class="error-message" role="alert"></div>
-				<footer>
-					<button type="submit" class="primary">Create</button>
-					<button type="button" class="secondary" @click="showModal = false">Cancel</button>
-				</footer>
-			</form>
-		</article>
-	</dialog>
-	<h2>Buckets</h2>
-	<hr />
-	if len(buckets) == 0 {
-	<p><small>No buckets found.</small></p>
-	} else {
-	<ul class="bucket-list">
-		for _, b := range buckets {
-		<li>
-			<a class={fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name==selectedBucket))}
-				href={fmt.Sprintf("/bucket/%s/", templ.EscapeString(b.Name))}><span
-					class="object-icon object-icon-bucket" aria-hidden="true">🪣</span> {b.Name}</a>
-		</li>
+	<aside class="sidebar">
+		<button type="button" class="contrast new-bucket-button" @click="showModal = true">+ New Bucket</button>
+		<dialog
+			id="new-bucket-modal"
+			class="new-bucket-modal"
+			x-ref="modal"
+			x-show="showModal"
+			@click.outside="showModal = false"
+			@keydown.escape.window="showModal = false"
+			x-effect="showModal ? $refs.modal.showModal() : $refs.modal.close()"
+		>
+			<article>
+				<header>
+					<h3>Create New Bucket</h3>
+				</header>
+				<form
+					method="post"
+					action="/buckets"
+					hx-post="/buckets"
+					hx-target-error="#new-bucket-error"
+				>
+					<label>
+						Bucket name
+						<input
+							name="name"
+							type="text"
+							required
+							minlength="3"
+							maxlength="63"
+							pattern="[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]"
+							placeholder="my-bucket"
+						/>
+					</label>
+					<div id="new-bucket-error" class="error-message" role="alert"></div>
+					<footer>
+						<button type="submit" class="primary">Create</button>
+						<button type="button" class="secondary" @click="showModal = false">Cancel</button>
+					</footer>
+				</form>
+			</article>
+		</dialog>
+		<h2>Buckets</h2>
+		<hr/>
+		if len(buckets) == 0 {
+			<p><small>No buckets found.</small></p>
+		} else {
+			<ul class="bucket-list">
+				for _, b := range buckets {
+					<li>
+						<a
+							class={ fmt.Sprintf("bucket-link %v", templ.KV("active", b.Name == selectedBucket)) }
+							href={ fmt.Sprintf("/bucket/%s/", templ.EscapeString(b.Name)) }
+						>
+							<span
+								class="object-icon object-icon-bucket"
+								aria-hidden="true"
+							>🪣</span> { b.Name }
+						</a>
+					</li>
+				}
+			</ul>
 		}
-	</ul>
-	}
-</aside>
+	</aside>
 }
 
 // Layout renders a full HTML page with a left-hand bucket
 // list and a main content area.
 templ Layout(title string, buckets []Bucket, selectedBucket string, body templ.Component) {
-<!DOCTYPE html>
-<html lang="en" data-theme="dark" x-data="{ showModal: false }">
-
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<meta name="color-scheme" content="light dark">
-	<title>{title}</title>
-	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.colors.min.css">
-	<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
-	<link rel="stylesheet" href="/static/css/style.css">
-	<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"
-		integrity="sha384-/TgkGk7p307TH7EXJDuUlgG3Ce1UVolAOFopFekQkkXihi5u/6OCvVKyz1W+idaz"
-		crossorigin="anonymous"></script>
-	<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-</head>
-
-<body hx-boost="true">
-	<div class="app-shell">
-		@Sidebar(buckets, selectedBucket)
-		<main class="main-area">
-			@body
-		</main>
-	</div>
-</body>
-
-</html>
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark" x-data="{ showModal: false }">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+			<title>{ title }</title>
+			<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.colors.min.css"/>
+			<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css"/>
+			<link rel="stylesheet" href="/static/css/style.css"/>
+			<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js" integrity="sha384-/TgkGk7p307TH7EXJDuUlgG3Ce1UVolAOFopFekQkkXihi5u/6OCvVKyz1W+idaz" crossorigin="anonymous"></script>
+			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-response-targets@2.0.4" integrity="sha384-T41oglUPvXLGBVyRdZsVRxNWnOOqCynaPubjUVjxhsjFTKrFJGEMm3/0KGmNQ+Pg" crossorigin="anonymous"></script>
+			<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+		</head>
+		<body hx-boost="true" hx-ext="response-targets">
+			<div class="app-shell">
+				@Sidebar(buckets, selectedBucket)
+				<main class="main-area">
+					@body
+				</main>
+			</div>
+		</body>
+	</html>
 }

@@ -38,7 +38,7 @@
                 "Launch Silo UI"
             ],
 
-            "stopAll": true
+            "stopAll": true,
         }
     ]
 }
