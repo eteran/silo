@@ -123,6 +123,29 @@ type CompleteMultipartUploadResult struct {
 	ETag     string   `xml:"ETag"`
 }
 
+// ListPartsPart represents a single part entry in a ListPartsResult
+// response.
+type ListPartsPart struct {
+	PartNumber   int    `xml:"PartNumber"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+}
+
+// ListPartsResult represents the XML response for the ListParts API.
+type ListPartsResult struct {
+	XMLName              xml.Name        `xml:"ListPartsResult"`
+	XMLNS                string          `xml:"xmlns,attr"`
+	Bucket               string          `xml:"Bucket"`
+	Key                  string          `xml:"Key"`
+	UploadID             string          `xml:"UploadId"`
+	PartNumberMarker     int             `xml:"PartNumberMarker"`
+	NextPartNumberMarker int             `xml:"NextPartNumberMarker"`
+	MaxParts             int             `xml:"MaxParts"`
+	IsTruncated          bool            `xml:"IsTruncated"`
+	Parts                []ListPartsPart `xml:"Part"`
+}
+
 // Tag represents a single key/value tag entry.
 type Tag struct {
 	Key   string `xml:"Key"`

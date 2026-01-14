@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"silo/internal/auth"
 	"silo/internal/storage"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -371,6 +372,150 @@ func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decod
 	return written, hashHex, nil
 }
 
+// handleListParts implements the ListParts API:
+// GET /bucket/key?uploadId=ID[&part-number-marker=N][&max-parts=M]
+func (s *Server) handleListParts(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string, uploadID string) {
+	// Ensure bucket exists; do not auto-create.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("ListParts bucket lookup", "bucket", bucket, "err", err)
+		writeInternalError(w, r)
+		return
+	} else if !exists {
+		writeNoSuchBucketError(w, r)
+		return
+	}
+
+	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	if stat, err := os.Stat(uploadDir); err != nil || !stat.IsDir() {
+		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, http.StatusNotFound)
+		return
+	}
+
+	// Parse optional pagination parameters.
+	q := r.URL.Query()
+	partNumberMarker := 0
+	if v := q.Get("part-number-marker"); v != "" {
+		m, err := strconv.Atoi(v)
+		if err != nil || m < 0 {
+			writeS3Error(w, "InvalidArgument", "The part-number-marker query parameter is invalid.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		partNumberMarker = m
+	}
+
+	maxParts := 1000
+	if v := q.Get("max-parts"); v != "" {
+		m, err := strconv.Atoi(v)
+		if err != nil || m <= 0 {
+			writeS3Error(w, "InvalidArgument", "The max-parts query parameter is invalid.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		if m < maxParts {
+			maxParts = m
+		}
+	}
+
+	entries, err := os.ReadDir(uploadDir)
+	if err != nil {
+		slog.Error("ListParts read upload dir", "path", uploadDir, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	var numbers []int
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(entry.Name(), "part-%06d", &n); err != nil {
+			continue
+		}
+		numbers = append(numbers, n)
+	}
+
+	sort.Ints(numbers)
+
+	parts := make([]ListPartsPart, 0, len(numbers))
+	var nextPartNumberMarker int
+	isTruncated := false
+	count := 0
+
+	for idx, n := range numbers {
+		if n <= partNumberMarker {
+			continue
+		}
+
+		partPath := filepath.Join(uploadDir, fmt.Sprintf("part-%06d", n))
+		info, err := os.Stat(partPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeS3Error(w, "InvalidPart", "One or more of the specified parts could not be found.", r.URL.Path, http.StatusBadRequest)
+				return
+			}
+			slog.Error("ListParts stat part file", "path", partPath, "err", err)
+			writeInternalError(w, r)
+			return
+		}
+
+		pf, err := os.Open(partPath)
+		if err != nil {
+			slog.Error("ListParts open part file", "path", partPath, "err", err)
+			writeS3Error(w, "InvalidPart", "One or more of the specified parts could not be found.", r.URL.Path, http.StatusBadRequest)
+			return
+		}
+
+		h := sha256.New()
+		if _, err := io.Copy(h, pf); err != nil {
+			_ = pf.Close()
+			slog.Error("ListParts hash part file", "path", partPath, "err", err)
+			writeInternalError(w, r)
+			return
+		}
+		if err := pf.Close(); err != nil {
+			slog.Debug("ListParts close part file", "path", partPath, "err", err)
+		}
+
+		etag := createETag(hex.EncodeToString(h.Sum(nil)))
+		parts = append(parts, ListPartsPart{
+			PartNumber:   n,
+			LastModified: info.ModTime().UTC().Format(time.RFC3339),
+			ETag:         etag,
+			Size:         info.Size(),
+		})
+
+		nextPartNumberMarker = n
+		count++
+		if count >= maxParts {
+			// Determine if there are more parts beyond what we've returned.
+			if idx < len(numbers)-1 {
+				isTruncated = true
+			}
+			break
+		}
+	}
+
+	if count == 0 {
+		nextPartNumberMarker = partNumberMarker
+	}
+
+	resp := ListPartsResult{
+		XMLNS:                S3XMLNamespace,
+		Bucket:               bucket,
+		Key:                  key,
+		UploadID:             uploadID,
+		PartNumberMarker:     partNumberMarker,
+		NextPartNumberMarker: nextPartNumberMarker,
+		MaxParts:             maxParts,
+		IsTruncated:          isTruncated,
+		Parts:                parts,
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode ListParts XML", "bucket", bucket, "key", key, "err", err)
+	}
+}
+
 // ------ Dispatchers for bucket-level HTTP handlers ------
 
 // handleBucketPut dispatches PUT /bucket[?subresource] between CreateBucket
@@ -549,7 +694,8 @@ func (s *Server) handleObjectGet(ctx context.Context, w http.ResponseWriter, r *
 	case q.Has("attributes"):
 		s.writeNotImplemented(w, r, "GetObjectAttributes")
 	case q.Has("uploadId"):
-		s.writeNotImplemented(w, r, "ListParts")
+		uploadID := q.Get("uploadId")
+		s.handleListParts(ctx, w, r, bucket, key, uploadID)
 	default:
 		s.handleGetObject(ctx, w, r, bucket, key)
 	}
@@ -1630,14 +1776,7 @@ func (s *Server) handleCreateMultipartUpload(ctx context.Context, w http.Respons
 	}
 
 	uploadID := uuid.NewString()
-	uploadsRoot := filepath.Join(s.Config.DataDir, "uploads")
-	if err := os.MkdirAll(uploadsRoot, 0o755); err != nil {
-		slog.Error("Create uploads root dir", "path", uploadsRoot, "err", err)
-		writeInternalError(w, r)
-		return
-	}
-
-	uploadDir := filepath.Join(uploadsRoot, uploadID)
+	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		slog.Error("Create multipart upload dir", "path", uploadDir, "err", err)
 		writeInternalError(w, r)

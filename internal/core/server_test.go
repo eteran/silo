@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1319,4 +1320,216 @@ func TestExplicitMultipartUploadUsingMinioCore(t *testing.T) {
 	got, err := io.ReadAll(resp.Body)
 	require.NoError(t, err, "reading completed multipart object")
 	require.Equal(t, full.Bytes(), got, "completed multipart object payload mismatch")
+}
+
+// TestListObjectPartsUsingMinioCore verifies that the ListParts API is
+// correctly implemented by exercising it via the MinIO Core
+// ListObjectParts helper, including basic pagination behavior.
+func TestListObjectPartsUsingMinioCore(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	coreClient, err := minio.NewCore(u.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure:       u.Scheme == "https",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO Core client")
+
+	const (
+		bucket = "minio-core-list-parts-bucket"
+		object = "core-list-parts-object.bin"
+	)
+
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	// Initiate multipart upload and upload three parts.
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "NewMultipartUpload via MinIO Core")
+	require.NotEmpty(t, uploadID, "uploadID should not be empty")
+
+	partData := [][]byte{
+		bytes.Repeat([]byte("AAA"), 256*1024),
+		bytes.Repeat([]byte("BBB"), 256*1024),
+		bytes.Repeat([]byte("CCC"), 128*1024),
+	}
+
+	for i, data := range partData {
+		partNumber := i + 1
+		_, err := coreClient.PutObjectPart(ctx, bucket, object, uploadID, partNumber, bytes.NewReader(data), int64(len(data)), minio.PutObjectPartOptions{})
+		require.NoErrorf(t, err, "PutObjectPart via MinIO Core for part %d", partNumber)
+	}
+
+	// List all parts without a marker; expect three entries.
+	res, err := coreClient.ListObjectParts(ctx, bucket, object, uploadID, 0, 1000)
+	require.NoError(t, err, "ListObjectParts via MinIO Core")
+	require.Len(t, res.ObjectParts, 3, "expected three parts listed")
+	require.False(t, res.IsTruncated, "expected listing to not be truncated")
+
+	for i, p := range res.ObjectParts {
+		require.Equal(t, i+1, p.PartNumber, "part number ordering")
+	}
+
+	// Now test pagination: request max-parts=2, then resume from marker.
+	resPage1, err := coreClient.ListObjectParts(ctx, bucket, object, uploadID, 0, 2)
+	require.NoError(t, err, "ListObjectParts page 1 via MinIO Core")
+	require.Len(t, resPage1.ObjectParts, 2, "expected two parts on page 1")
+	require.True(t, resPage1.IsTruncated, "expected page 1 to be truncated")
+	require.Equal(t, 2, resPage1.NextPartNumberMarker, "expected next marker after page 1 to be 2")
+
+	resPage2, err := coreClient.ListObjectParts(ctx, bucket, object, uploadID, resPage1.NextPartNumberMarker, 2)
+	require.NoError(t, err, "ListObjectParts page 2 via MinIO Core")
+	require.Len(t, resPage2.ObjectParts, 1, "expected one part on page 2")
+	require.False(t, resPage2.IsTruncated, "expected page 2 to not be truncated")
+	require.Equal(t, 3, resPage2.ObjectParts[0].PartNumber, "expected part number 3 on page 2")
+}
+
+// TestCompleteMultipartUploadWithNoPartsUsingMinioCore verifies that
+// attempting to complete a multipart upload with no parts specified
+// results in an InvalidRequest error from the server.
+func TestCompleteMultipartUploadWithNoPartsUsingMinioCore(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	coreClient, err := minio.NewCore(u.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure:       u.Scheme == "https",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO Core client")
+
+	const (
+		bucket = "minio-core-multipart-empty-parts-bucket"
+		object = "core-multipart-empty-parts-object.bin"
+	)
+
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "NewMultipartUpload via MinIO Core")
+	require.NotEmpty(t, uploadID, "uploadID should not be empty")
+
+	// Attempt to complete with no parts.
+	_, err = coreClient.CompleteMultipartUpload(ctx, bucket, object, uploadID, nil, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.Error(t, err, "expected error when completing with no parts")
+
+	errResp := minio.ToErrorResponse(err)
+	require.Equal(t, "InvalidRequest", errResp.Code, "expected InvalidRequest from server for empty parts list")
+}
+
+// TestCompleteMultipartUploadMissingPartUsingMinioCore verifies that if a
+// part file is missing on disk when completing the upload, the server
+// returns an InvalidPart error.
+func TestCompleteMultipartUploadMissingPartUsingMinioCore(t *testing.T) {
+	t.Parallel()
+
+	srv, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	coreClient, err := minio.NewCore(u.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure:       u.Scheme == "https",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO Core client")
+
+	const (
+		bucket = "minio-core-multipart-missing-part-bucket"
+		object = "core-multipart-missing-part-object.bin"
+	)
+
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "NewMultipartUpload via MinIO Core")
+	require.NotEmpty(t, uploadID, "uploadID should not be empty")
+
+	// Upload a single part.
+	data := bytes.Repeat([]byte("PART"), 256*1024) // ~1 MiB
+	objPart, err := coreClient.PutObjectPart(ctx, bucket, object, uploadID, 1, bytes.NewReader(data), int64(len(data)), minio.PutObjectPartOptions{})
+	require.NoError(t, err, "PutObjectPart via MinIO Core")
+
+	parts := []minio.CompletePart{{
+		PartNumber: 1,
+		ETag:       objPart.ETag,
+	}}
+
+	// Remove the underlying part file from disk to simulate corruption.
+	partFilename := fmt.Sprintf("part-%06d", 1)
+	partPath := filepath.Join(srv.Config.DataDir, "uploads", uploadID, partFilename)
+	require.NoError(t, os.Remove(partPath), "removing part file to simulate missing part")
+
+	_, err = coreClient.CompleteMultipartUpload(ctx, bucket, object, uploadID, parts, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.Error(t, err, "expected error when completing with missing part file")
+
+	errResp := minio.ToErrorResponse(err)
+	require.Equal(t, "InvalidPart", errResp.Code, "expected InvalidPart from server for missing part file")
+}
+
+// TestCompleteMultipartUploadAfterAbortUsingMinioCore verifies that trying
+// to complete a multipart upload after it has been aborted results in a
+// NoSuchUpload error.
+func TestCompleteMultipartUploadAfterAbortUsingMinioCore(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	u, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err, "parsing test server URL")
+
+	coreClient, err := minio.NewCore(u.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+		Secure:       u.Scheme == "https",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	require.NoError(t, err, "creating MinIO Core client")
+
+	const (
+		bucket = "minio-core-multipart-abort-complete-bucket"
+		object = "core-multipart-abort-complete-object.bin"
+	)
+
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	uploadID, err := coreClient.NewMultipartUpload(ctx, bucket, object, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.NoError(t, err, "NewMultipartUpload via MinIO Core")
+	require.NotEmpty(t, uploadID, "uploadID should not be empty")
+
+	// Upload a small part so there is something to complete.
+	data := []byte("hello-multipart")
+	objPart, err := coreClient.PutObjectPart(ctx, bucket, object, uploadID, 1, bytes.NewReader(data), int64(len(data)), minio.PutObjectPartOptions{})
+	require.NoError(t, err, "PutObjectPart via MinIO Core")
+
+	parts := []minio.CompletePart{{
+		PartNumber: 1,
+		ETag:       objPart.ETag,
+	}}
+
+	// Abort the multipart upload first.
+	require.NoError(t, coreClient.AbortMultipartUpload(ctx, bucket, object, uploadID), "AbortMultipartUpload via MinIO Core")
+
+	// Attempt to complete after abort should fail with NoSuchUpload.
+	_, err = coreClient.CompleteMultipartUpload(ctx, bucket, object, uploadID, parts, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	require.Error(t, err, "expected error when completing after abort")
+
+	errResp := minio.ToErrorResponse(err)
+	require.Equal(t, "NoSuchUpload", errResp.Code, "expected NoSuchUpload from server after abort")
 }

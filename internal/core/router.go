@@ -9,7 +9,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// List all buckets
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		s.handleListBuckets(ctx, w, r)
 	})
