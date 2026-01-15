@@ -233,8 +233,8 @@ func Run(ctx context.Context, client *minio.Client) error {
 
 func main() {
 	endpoint := getenv("MINIO_ENDPOINT", "localhost:9000")
-	accessKey := getenv("MINIO_ACCESS_KEY", "minioadmin")
-	secretKey := getenv("MINIO_SECRET_KEY", "minioadmin")
+	accessKey := getenv("MINIO_ACCESS_KEY", "siloadmin")
+	secretKey := getenv("MINIO_SECRET_KEY", "siloadmin")
 
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),

@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	AccessKeyID     = "minioadmin"
-	SecretAccessKey = "minioadmin"
+	AccessKeyID     = "siloadmin"
+	SecretAccessKey = "siloadmin"
 )
 
 func signRequestSigV4(t *testing.T, r *http.Request) {

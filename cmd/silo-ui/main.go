@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"embed"
-	"flag"
 	"fmt"
 	"html"
 	"io/fs"
@@ -24,15 +23,6 @@ var (
 	//go:embed static
 	staticFS embed.FS
 )
-
-// getenv returns the value of the environment variable named by key or
-// fallback if the variable is not present.
-func getenv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
-}
 
 type Server struct {
 	client *minio.Client
@@ -151,13 +141,22 @@ func (s *Server) CreateBucket(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
+func getEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
+
 func Run(ctx context.Context) error {
-	port := flag.String("port", getenv("SILO_UI_PORT", "9100"), "HTTP listen port")
-	endpoint := flag.String("s3-endpoint", getenv("SILO_UI_S3_ENDPOINT", "localhost:9000"), "S3 / Silo API endpoint (host:port)")
-	accessKey := flag.String("s3-access-key", getenv("SILO_UI_S3_ACCESS_KEY", "minioadmin"), "S3 access key")
-	secretKey := flag.String("s3-secret-key", getenv("SILO_UI_S3_SECRET_KEY", "minioadmin"), "S3 secret key")
-	useSSL := flag.Bool("s3-ssl", getenv("SILO_UI_S3_SSL", "false") == "true", "Use HTTPS for S3 endpoint")
-	flag.Parse()
+
+	var (
+		HttpPort    = getEnv("SILO_UI_PORT", "9100")
+		S3Endpoint  = getEnv("SILO_UI_S3_ENDPOINT", "localhost:9000")
+		S3AccessKey = getEnv("SILO_UI_S3_ACCESS_KEY", "siloadmin")
+		S3SecretKey = getEnv("SILO_UI_S3_SECRET_KEY", "siloadmin")
+		S3UseSSL    = getEnv("SILO_UI_S3_SSL", "false") == "true"
+	)
 
 	// Logging setup consistent with main silo server.
 	handler := log.NewWithOptions(os.Stdout, log.Options{
@@ -169,9 +168,9 @@ func Run(ctx context.Context) error {
 	})
 	slog.SetDefault(slog.New(handler))
 
-	client, err := minio.New(*endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(*accessKey, *secretKey, ""),
-		Secure: *useSSL,
+	client, err := minio.New(S3Endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(S3AccessKey, S3SecretKey, ""),
+		Secure: S3UseSSL,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create S3 client: %w", err)
@@ -194,14 +193,14 @@ func Run(ctx context.Context) error {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticContent))))
 
 	srv := &http.Server{
-		Addr:              ":" + *port,
+		Addr:              ":" + HttpPort,
 		Handler:           mux,
 		ReadHeaderTimeout: 15 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 	}
 
-	slog.Info("Starting Silo UI server", "port", *port, "s3_endpoint", *endpoint)
+	slog.Info("Starting Silo UI server", "port", HttpPort, "s3_endpoint", S3Endpoint)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("silo UI server failed: %w", err)
 	}

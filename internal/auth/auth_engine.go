@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	DefaultAccessKeyID     = "minioadmin"
-	DefaultSecretAccessKey = "minioadmin"
+	DefaultAccessKeyID     = "siloadmin"
+	DefaultSecretAccessKey = "siloadmin"
 )
 
 type User struct {

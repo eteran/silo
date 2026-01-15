@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	AccessKeyID     = "minioadmin"
-	SecretAccessKey = "minioadmin"
+	AccessKeyID     = "siloadmin"
+	SecretAccessKey = "siloadmin"
 )
 
 // NewTestServer creates a Server backed by temporary filesystem and SQLite DB

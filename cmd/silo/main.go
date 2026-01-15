@@ -25,11 +25,14 @@ func getEnv(key, defaultValue string) string {
 
 func Run(ctx context.Context) error {
 
-	SILO_HTTP_PORT := getEnv("SILO_HTTP_PORT", "9000")
-	SILO_HTTPS_PORT := getEnv("SILO_HTTPS_PORT", "9443")
-	SILO_DATA_DIR := getEnv("SILO_DATA_DIR", "./data")
-	ServerCrtFile := getEnv("SILO_SERVER_CRT_FILE", "")
-	ServerKeyFile := getEnv("SILO_SERVER_KEY_FILE", "")
+	var (
+		HttpPort      = getEnv("SILO_HTTP_PORT", "9000")
+		HttpsPort     = getEnv("SILO_HTTPS_PORT", "9443")
+		DataDir       = getEnv("SILO_DATA_DIR", "./data")
+		Region        = getEnv("SILO_S3_REGION", "us-east-1")
+		ServerCrtFile = getEnv("SILO_SERVER_CRT_FILE", "")
+		ServerKeyFile = getEnv("SILO_SERVER_KEY_FILE", "")
+	)
 
 	handler := log.NewWithOptions(os.Stdout, log.Options{
 		Level:           log.DebugLevel,
@@ -42,7 +45,7 @@ func Run(ctx context.Context) error {
 	slog.SetDefault(slog.New(handler))
 
 	// Ensure data directory is absolute for easier debugging.
-	absDataDir, err := filepath.Abs(SILO_DATA_DIR)
+	absDataDir, err := filepath.Abs(DataDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve data directory: %w", err)
 	}
@@ -53,6 +56,7 @@ func Run(ctx context.Context) error {
 
 	cfg := core.Config{
 		DataDir: absDataDir,
+		Region:  Region,
 	}
 
 	server, err := core.NewServer(ctx, cfg)
@@ -67,7 +71,7 @@ func Run(ctx context.Context) error {
 	router := server.Handler()
 
 	httpServer := &http.Server{
-		Addr:              ":" + SILO_HTTP_PORT,
+		Addr:              ":" + HttpPort,
 		Handler:           router,
 		ReadHeaderTimeout: 20 * time.Second,
 		ReadTimeout:       20 * time.Second,
@@ -79,7 +83,7 @@ func Run(ctx context.Context) error {
 			ClientAuth: tls.RequestClientCert,
 			MinVersion: tls.VersionTLS12,
 		},
-		Addr:              ":" + SILO_HTTPS_PORT,
+		Addr:              ":" + HttpsPort,
 		Handler:           router,
 		ReadHeaderTimeout: 20 * time.Second,
 		ReadTimeout:       20 * time.Second,
@@ -103,7 +107,7 @@ func Run(ctx context.Context) error {
 			return nil
 		}
 
-		slog.Info("Starting Silo HTTPS server", "port", SILO_HTTPS_PORT)
+		slog.Info("Starting Silo HTTPS server", "port", HttpsPort)
 		err := httpsServer.ListenAndServeTLS(ServerCrtFile, ServerKeyFile)
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
@@ -113,7 +117,7 @@ func Run(ctx context.Context) error {
 	})
 
 	eg.Go(func() error {
-		slog.Info("Starting Silo HTTP server", "port", SILO_HTTP_PORT)
+		slog.Info("Starting Silo HTTP server", "port", HttpPort)
 		err := httpServer.ListenAndServe()
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
