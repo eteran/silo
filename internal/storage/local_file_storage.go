@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,12 +17,21 @@ import (
 // hash, with the first two characters used as a subdirectory prefix. Buckets
 // are tracked in metadata only and do not affect the on-disk layout.
 type LocalFileStorage struct {
-	dataDir string
+	dataDir  string
+	compress bool
 }
 
 // NewLocalFileStorage creates a new LocalFileStorage rooted at dataDir.
 func NewLocalFileStorage(dataDir string) *LocalFileStorage {
 	return &LocalFileStorage{dataDir: dataDir}
+}
+
+// NewLocalFileStorageWithGzip creates a new LocalFileStorage rooted at
+// dataDir that transparently gzips payloads on disk while still returning
+// the original (decompressed) bytes from GetObject. Existing uncompressed
+// objects remain readable.
+func NewLocalFileStorageWithGzip(dataDir string) *LocalFileStorage {
+	return &LocalFileStorage{dataDir: dataDir, compress: true}
 }
 
 // ObjectPath computes the full filesystem path for the object identified by
@@ -49,7 +61,30 @@ func (s *LocalFileStorage) PutObject(bucket string, hashHex string, data []byte)
 	}
 	defer lock.Unlock()
 
-	return os.WriteFile(objPath, data, 0o644)
+	if !s.compress {
+		return os.WriteFile(objPath, data, 0o644)
+	}
+
+	dst, err := os.OpenFile(objPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := dst.Write([]byte(gzipMagicHeader)); err != nil {
+		return err
+	}
+
+	gw := gzip.NewWriter(dst)
+	defer func() {
+		_ = gw.Close()
+	}()
+
+	if _, err := gw.Write(data); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // PutObjectFromFile stores an object whose payload already exists on disk at
@@ -72,7 +107,35 @@ func (s *LocalFileStorage) PutObjectFromFile(bucket string, hashHex string, temp
 	}
 	defer lock.Unlock()
 
-	if err := os.Rename(tempPath, objPath); err != nil {
+	if !s.compress {
+		if err := os.Rename(tempPath, objPath); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	src, err := os.Open(tempPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(objPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := dst.Write([]byte(gzipMagicHeader)); err != nil {
+		return err
+	}
+
+	gw := gzip.NewWriter(dst)
+	if _, err := io.Copy(gw, src); err != nil {
+		_ = gw.Close()
+		return err
+	}
+	if err := gw.Close(); err != nil {
 		return err
 	}
 
@@ -93,7 +156,36 @@ func (s *LocalFileStorage) GetObject(bucket string, hashHex string) ([]byte, err
 	}
 	defer lock.Unlock()
 
-	return os.ReadFile(objPath)
+	data, err := os.ReadFile(objPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// If gzip compression is disabled, return the raw bytes.
+	if !s.compress {
+		return data, nil
+	}
+
+	// When gzip compression is enabled, we support both the newer
+	// gzip-wrapped format (with a magic header) and legacy uncompressed
+	// objects. This allows toggling compression without breaking
+	// existing data.
+	if len(data) >= len(gzipMagicHeader) && bytes.Equal(data[:len(gzipMagicHeader)], []byte(gzipMagicHeader)) {
+		gr, err := gzip.NewReader(bytes.NewReader(data[len(gzipMagicHeader):]))
+		if err != nil {
+			return nil, err
+		}
+		defer gr.Close()
+
+		uncompressed, err := io.ReadAll(gr)
+		if err != nil {
+			return nil, err
+		}
+		return uncompressed, nil
+	}
+
+	// Fallback for legacy uncompressed objects.
+	return data, nil
 }
 
 func (s *LocalFileStorage) DeleteObject(bucket string, hashHex string) error {
@@ -109,6 +201,12 @@ func (s *LocalFileStorage) DeleteObject(bucket string, hashHex string) error {
 type FileLock struct {
 	path string
 }
+
+// gzipMagicHeader is a short marker written ahead of gzip-compressed
+// payloads on disk. It allows LocalFileStorage to distinguish between
+// legacy uncompressed objects and newer gzip-wrapped ones when
+// compression is enabled.
+const gzipMagicHeader = "SILO_GZ1\n"
 
 // acquireLock attempts to create a lock file next to the target path
 // using O_CREATE|O_EXCL, retrying for a short bounded period if the lock

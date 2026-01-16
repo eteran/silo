@@ -2,9 +2,11 @@ package storage_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"silo/internal/storage"
@@ -91,6 +93,66 @@ func TestLocalFileStorageHardLinksAcrossBuckets(t *testing.T) {
 	info, err := os.Stat(objPath)
 	require.NoError(t, err, "expected single object file for shared payload")
 	require.False(t, info.IsDir(), "object path should be a file")
+}
+
+func TestLocalFileStorageWithGzipPutAndGet(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	engine := storage.NewLocalFileStorageWithGzip(dataDir)
+	const bucket = "example-gzip"
+
+	payload := []byte("hello local storage with gzip")
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+
+	require.NoError(t, engine.PutObject(bucket, hashHex, payload), "PutObject error")
+
+	objPath, err := storage.ObjectPath(dataDir, hashHex)
+	require.NoError(t, err, "ObjectPath error")
+
+	// On disk, the payload should be gzip-compressed and prefixed with the
+	// magic header, while GetObject should transparently return the original
+	// bytes.
+	raw, err := os.ReadFile(objPath)
+	require.NoError(t, err, "reading stored object")
+	require.Greater(t, len(raw), len(payload), "compressed representation should include header and gzip wrapper")
+	require.True(t, bytes.HasPrefix(raw, []byte("SILO_GZ1\n")), "stored object should have gzip magic header")
+
+	// Strip the magic header and ensure the remainder is valid gzip.
+	gr, err := gzip.NewReader(bytes.NewReader(raw[len("SILO_GZ1\n"):]))
+	require.NoError(t, err, "expected valid gzip data after magic header")
+	defer gr.Close()
+
+	uncompressed, err := io.ReadAll(gr)
+	require.NoError(t, err, "decompressing stored object")
+	require.Equal(t, payload, uncompressed, "decompressed payload mismatch")
+
+	got, err := engine.GetObject(bucket, hashHex)
+	require.NoError(t, err, "GetObject error")
+	require.Equal(t, payload, got, "payload mismatch after gzip round-trip")
+}
+
+func TestLocalFileStorageWithGzipReadsLegacyUncompressed(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	engine := storage.NewLocalFileStorageWithGzip(dataDir)
+	const bucket = "legacy-bucket"
+
+	payload := []byte("legacy uncompressed payload")
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+
+	objPath, err := storage.ObjectPath(dataDir, hashHex)
+	require.NoError(t, err, "ObjectPath error")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(objPath), 0o755))
+	require.NoError(t, os.WriteFile(objPath, payload, 0o644))
+
+	got, err := engine.GetObject(bucket, hashHex)
+	require.NoError(t, err, "GetObject error for legacy object")
+	require.Equal(t, payload, got, "legacy uncompressed payload mismatch")
 }
 
 // TestLocalFileStorageConcurrentPutObject verifies that concurrent PutObject
