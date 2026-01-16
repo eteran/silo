@@ -288,7 +288,7 @@ func TestListObjects(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket status")
 
-	var listResp core.ListBucketResult
+	var listResp core.ListBucketResultV1
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listResp), "decoding ListBucketResult")
 	require.Len(t, listResp.Contents, 3, "expected all objects without prefix filter")
 
@@ -297,7 +297,7 @@ func TestListObjects(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "GET bucket with prefix status")
 
-	var listRespWithPrefix core.ListBucketResult
+	var listRespWithPrefix core.ListBucketResultV1
 	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&listRespWithPrefix), "decoding ListBucketResult with prefix")
 	require.Len(t, listRespWithPrefix.Contents, 2, "expected only prefixed objects")
 	require.Equal(t, "dir/a.txt", listRespWithPrefix.Contents[0].Key, "first key with prefix")
@@ -1056,11 +1056,6 @@ func TestNotImplementedRoutes(t *testing.T) {
 			method: http.MethodPost,
 			path:   "/bucket?delete",
 		},
-		{
-			name:   "ListMultipartUploads",
-			method: http.MethodGet,
-			path:   "/bucket?uploads",
-		},
 	}
 
 	for _, tc := range tests {
@@ -1080,6 +1075,49 @@ func TestNotImplementedRoutes(t *testing.T) {
 			require.Equal(t, "NotImplemented", s3Err.Code, "S3 error code")
 		})
 	}
+}
+
+// TestListMultipartUploads verifies that in-progress multipart uploads for a
+// bucket are returned by GET /bucket?uploads.
+func TestListMultipartUploads(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+
+	const (
+		bucket = "list-multipart-bucket"
+		key    = "multipart-object.bin"
+	)
+
+	// Create the bucket.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	// Initiate a multipart upload.
+	initResp := DoMethod(t, http.MethodPost, httpSrv.URL+"/"+bucket+"/"+key+"?uploads")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode, "CreateMultipartUpload status")
+
+	var initResult core.InitiateMultipartUploadResult
+	require.NoError(t, xml.NewDecoder(initResp.Body).Decode(&initResult), "decoding CreateMultipartUploadResult")
+	require.Equal(t, bucket, initResult.Bucket, "CreateMultipartUpload bucket")
+	require.Equal(t, key, initResult.Key, "CreateMultipartUpload key")
+	require.NotEmpty(t, initResult.UploadID, "CreateMultipartUpload upload ID")
+
+	// List multipart uploads for the bucket.
+	listResp := DoGet(t, httpSrv.URL+"/"+bucket+"?uploads")
+	defer listResp.Body.Close()
+	require.Equal(t, http.StatusOK, listResp.StatusCode, "ListMultipartUploads status")
+
+	var listResult core.ListMultipartUploadsResult
+	require.NoError(t, xml.NewDecoder(listResp.Body).Decode(&listResult), "decoding ListMultipartUploadsResult")
+	require.Equal(t, bucket, listResult.Bucket, "ListMultipartUploads bucket")
+	require.Len(t, listResult.Uploads, 1, "expected exactly one in-progress upload")
+
+	u := listResult.Uploads[0]
+	require.Equal(t, key, u.Key, "upload key")
+	require.Equal(t, initResult.UploadID, u.UploadID, "upload ID")
 }
 
 func TestDeleteBucketRemovesMetadata(t *testing.T) {

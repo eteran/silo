@@ -4,32 +4,32 @@ import "encoding/xml"
 
 const S3XMLNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
-type ListAllMyBucketsOwner struct {
+type Owner struct {
 	ID          string `xml:"ID"`
 	DisplayName string `xml:"DisplayName"`
 }
 
-type ListAllMyBucketsEntry struct {
+type BucketEntry struct {
 	Name         string `xml:"Name"`
 	CreationDate string `xml:"CreationDate"`
 }
 
 // ListAllMyBucketsResult represents the XML response for the S3 ListBuckets API.
 type ListAllMyBucketsResult struct {
-	XMLName xml.Name                `xml:"ListAllMyBucketsResult"`
-	XMLNS   string                  `xml:"xmlns,attr"`
-	Owner   ListAllMyBucketsOwner   `xml:"Owner"`
-	Buckets []ListAllMyBucketsEntry `xml:"Buckets>Bucket"`
+	XMLName xml.Name      `xml:"ListAllMyBucketsResult"`
+	XMLNS   string        `xml:"xmlns,attr"`
+	Owner   Owner         `xml:"Owner"`
+	Buckets []BucketEntry `xml:"Buckets>Bucket"`
 }
 
-// CommonPrefix represents a single common prefix entry in a ListBucketResult.
+// CommonPrefix represents a single common prefix entry in a ListBucketResultV1.
 // It is used to model "directories" when a delimiter such as "/" is used.
 type CommonPrefix struct {
 	Prefix string `xml:"Prefix"`
 }
 
-// ListBucketResult represents the XML response for the S3 ListObjects API.
-type ListBucketResult struct {
+// ListBucketResultV1 represents the XML response for the S3 ListObjects API.
+type ListBucketResultV1 struct {
 	XMLName        xml.Name        `xml:"ListBucketResult"`
 	XMLNS          string          `xml:"xmlns,attr"`
 	Name           string          `xml:"Name"`
@@ -41,7 +41,7 @@ type ListBucketResult struct {
 	CommonPrefixes []CommonPrefix  `xml:"CommonPrefixes,omitempty"`
 }
 
-// ListBucketResultV2 represents the XML response for the S3 ListObjectsV2
+// ListBucketResultV2 represents the XML response for the S3 ListBucketResultV2
 // API.
 type ListBucketResultV2 struct {
 	XMLName               xml.Name        `xml:"ListBucketResult"`
@@ -88,9 +88,9 @@ type CopyObjectResult struct {
 	ETag         string   `xml:"ETag"`
 }
 
-// CreateMultipartUploadResult represents the XML response for the
+// InitiateMultipartUploadResult represents the XML response for the
 // CreateMultipartUpload (InitiateMultipartUpload) API.
-type CreateMultipartUploadResult struct {
+type InitiateMultipartUploadResult struct {
 	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
 	XMLNS    string   `xml:"xmlns,attr"`
 	Bucket   string   `xml:"Bucket"`
@@ -144,6 +144,35 @@ type ListPartsResult struct {
 	MaxParts             int             `xml:"MaxParts"`
 	IsTruncated          bool            `xml:"IsTruncated"`
 	Parts                []ListPartsPart `xml:"Part"`
+}
+
+// MultipartUploadInfo represents a single in-progress multipart upload entry
+// in a ListMultipartUploadsResult response.
+type MultipartUploadInfo struct {
+	Key          string `xml:"Key"`
+	UploadID     string `xml:"UploadId"`
+	Initiator    Owner  `xml:"Initiator"`
+	Owner        Owner  `xml:"Owner"`
+	StorageClass string `xml:"StorageClass"`
+	Initiated    string `xml:"Initiated"`
+}
+
+// ListMultipartUploadsResult represents the XML response for the
+// ListMultipartUploads API: GET /bucket?uploads
+type ListMultipartUploadsResult struct {
+	XMLName            xml.Name              `xml:"ListMultipartUploadsResult"`
+	XMLNS              string                `xml:"xmlns,attr"`
+	Bucket             string                `xml:"Bucket"`
+	KeyMarker          string                `xml:"KeyMarker"`
+	UploadIDMarker     string                `xml:"UploadIdMarker"`
+	NextKeyMarker      string                `xml:"NextKeyMarker"`
+	NextUploadIDMarker string                `xml:"NextUploadIdMarker"`
+	MaxUploads         int                   `xml:"MaxUploads"`
+	IsTruncated        bool                  `xml:"IsTruncated"`
+	Prefix             string                `xml:"Prefix"`
+	Delimiter          string                `xml:"Delimiter,omitempty"`
+	CommonPrefixes     []CommonPrefix        `xml:"CommonPrefixes,omitempty"`
+	Uploads            []MultipartUploadInfo `xml:"Upload"`
 }
 
 // Tag represents a single key/value tag entry.

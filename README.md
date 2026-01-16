@@ -111,7 +111,6 @@ The table below summarizes which S3-style features are implemented.
 | Policy         | `PUT/GET/DELETE /{bucket}?policy`      | Not implemented |                                                |
 | Replication    | `PUT/GET/DELETE /{bucket}?replication` | Not implemented |                                                |
 | Multi-delete   | `POST /{bucket}?delete`                | Not implemented |                                                |
-| Multipart list | `GET /{bucket}?uploads`                | Not implemented |                                                |
 
 ### Objects
 
@@ -145,7 +144,7 @@ The table below summarizes which S3-style features are implemented.
 | AbortMultipartUpload    | `DELETE /{bucket}/{key}?uploadId=ID`                     | Implemented     | Deletes temporary upload directory.                                   |
 | ListParts               | `GET /{bucket}/{key}?uploadId=ID`                        | Implemented     | Returns part list with size, ETag, pagination.                        |
 | UploadPartCopy          | `PUT ...?uploadId=ID&partNumber=N` + `x-amz-copy-source` | Not implemented |                                                                       |
-| ListMultipartUploads    | `GET /{bucket}?uploads`                                  | Not implemented |                                                                       |
+| ListMultipartUploads    | `GET /{bucket}?uploads`                                  | Implemented     | Lists in-progress multipart uploads for the bucket                    |
 
 ### Authentication & Security
 

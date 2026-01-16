@@ -42,13 +42,6 @@ var (
 	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 )
 
-type Config struct {
-	DataDir       string
-	Region        string
-	Engine        storage.StorageEngine
-	Authenticator auth.AuthEngine
-}
-
 // Server provides a minimal S3-compatible HTTP API.
 type Server struct {
 	Config Config
@@ -595,7 +588,7 @@ func (s *Server) handleBucketGet(ctx context.Context, w http.ResponseWriter, r *
 	case q.Has("versions"):
 		s.writeNotImplemented(w, r, "ListObjectVersions")
 	case q.Has("uploads"):
-		s.writeNotImplemented(w, r, "ListMultipartUploads")
+		s.handleListMultipartUploads(ctx, w, r, bucket)
 	default:
 		s.handleListObjects(ctx, w, r, bucket)
 	}
@@ -1331,9 +1324,9 @@ func (s *Server) handleListBuckets(ctx context.Context, w http.ResponseWriter, r
 	}
 	defer rows.Close()
 
-	buckets := make([]ListAllMyBucketsEntry, 0)
+	buckets := make([]BucketEntry, 0)
 	for rows.Next() {
-		var b ListAllMyBucketsEntry
+		var b BucketEntry
 		if err := rows.Scan(&b.Name, &b.CreationDate); err != nil {
 			slog.Error("Scan bucket", "err", err)
 			continue
@@ -1343,7 +1336,7 @@ func (s *Server) handleListBuckets(ctx context.Context, w http.ResponseWriter, r
 
 	resp := ListAllMyBucketsResult{
 		XMLNS: S3XMLNamespace,
-		Owner: ListAllMyBucketsOwner{
+		Owner: Owner{
 			ID:          "silo",
 			DisplayName: "silo",
 		},
@@ -1578,7 +1571,7 @@ func (s *Server) handleListObjects(ctx context.Context, w http.ResponseWriter, r
 		}
 	}
 
-	resp := ListBucketResult{
+	resp := ListBucketResultV1{
 		XMLNS:          S3XMLNamespace,
 		Name:           bucket,
 		Prefix:         prefix,
@@ -1762,6 +1755,69 @@ func (s *Server) handleListObjectsV2(ctx context.Context, w http.ResponseWriter,
 
 // ------ Multipart upload handlers ------
 
+// multipartUploadMetadata is stored alongside each in-progress multipart
+// upload under data/uploads/<uploadId>/ to record its associated bucket
+// and key.
+type multipartUploadMetadata struct {
+	Bucket  string
+	Key     string
+	Created string
+}
+
+// writeMultipartUploadMetadata writes a simple metadata file into uploadDir
+// so that ListMultipartUploads can discover the bucket/key for an upload ID.
+func writeMultipartUploadMetadata(uploadDir string, meta multipartUploadMetadata) error {
+	metaPath := filepath.Join(uploadDir, "metadata")
+	f, err := os.Create(metaPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := fmt.Fprintln(f, meta.Bucket); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(f, meta.Key); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(f, meta.Created); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// readMultipartUploadMetadata loads multipartUploadMetadata from uploadDir.
+func readMultipartUploadMetadata(uploadDir string) (multipartUploadMetadata, error) {
+	metaPath := filepath.Join(uploadDir, "metadata")
+	f, err := os.Open(metaPath)
+	if err != nil {
+		return multipartUploadMetadata{}, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return multipartUploadMetadata{}, err
+	}
+	if len(lines) < 2 {
+		return multipartUploadMetadata{}, fmt.Errorf("invalid multipart metadata: expected at least 2 lines, got %d", len(lines))
+	}
+
+	meta := multipartUploadMetadata{
+		Bucket: lines[0],
+		Key:    lines[1],
+	}
+	if len(lines) >= 3 {
+		meta.Created = lines[2]
+	}
+	return meta, nil
+}
+
 // handleCreateMultipartUpload implements CreateMultipartUpload
 // (InitiateMultipartUpload): POST /bucket/key?uploads
 func (s *Server) handleCreateMultipartUpload(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {
@@ -1783,7 +1839,20 @@ func (s *Server) handleCreateMultipartUpload(ctx context.Context, w http.Respons
 		return
 	}
 
-	resp := CreateMultipartUploadResult{
+	// Record basic metadata for this in-progress upload so that
+	// ListMultipartUploads can associate upload IDs with bucket/keys.
+	meta := multipartUploadMetadata{
+		Bucket:  bucket,
+		Key:     key,
+		Created: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeMultipartUploadMetadata(uploadDir, meta); err != nil {
+		slog.Error("Write multipart upload metadata", "path", uploadDir, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	resp := InitiateMultipartUploadResult{
 		XMLNS:    S3XMLNamespace,
 		Bucket:   bucket,
 		Key:      key,
@@ -2036,4 +2105,105 @@ func (s *Server) handleAbortMultipartUpload(ctx context.Context, w http.Response
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListMultipartUploads implements ListMultipartUploads:
+// GET /bucket?uploads
+func (s *Server) handleListMultipartUploads(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	// Ensure bucket exists; do not auto-create.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("ListMultipartUploads bucket lookup", "bucket", bucket, "err", err)
+		writeInternalError(w, r)
+		return
+	} else if !exists {
+		writeNoSuchBucketError(w, r)
+		return
+	}
+
+	q := r.URL.Query()
+	prefix := q.Get("prefix")
+	maxUploads := 1000
+	if raw := q.Get("max-uploads"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			maxUploads = v
+		}
+	}
+
+	uploadsRoot := filepath.Join(s.Config.DataDir, "uploads")
+	entries, err := os.ReadDir(uploadsRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No in-progress uploads; return an empty result.
+			resp := ListMultipartUploadsResult{
+				XMLNS:       S3XMLNamespace,
+				Bucket:      bucket,
+				MaxUploads:  maxUploads,
+				IsTruncated: false,
+				Prefix:      prefix,
+			}
+			if wErr := writeXMLResponse(w, resp); wErr != nil {
+				slog.Error("Encode empty ListMultipartUploads XML", "bucket", bucket, "err", wErr)
+			}
+			return
+		}
+		slog.Error("ListMultipartUploads read uploads root", "path", uploadsRoot, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
+	uploads := make([]MultipartUploadInfo, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		uploadID := entry.Name()
+		uploadDir := filepath.Join(uploadsRoot, uploadID)
+		meta, err := readMultipartUploadMetadata(uploadDir)
+		if err != nil {
+			slog.Debug("ListMultipartUploads read metadata", "path", uploadDir, "err", err)
+			continue
+		}
+
+		if meta.Bucket != bucket {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(meta.Key, prefix) {
+			continue
+		}
+
+		initiated := meta.Created
+		if initiated == "" {
+			if info, err := os.Stat(uploadDir); err == nil {
+				initiated = info.ModTime().UTC().Format(time.RFC3339)
+			}
+		}
+
+		owner := Owner{ID: "silo", DisplayName: "silo"}
+		uploads = append(uploads, MultipartUploadInfo{
+			Key:          meta.Key,
+			UploadID:     uploadID,
+			Initiator:    owner,
+			Owner:        owner,
+			StorageClass: "STANDARD",
+			Initiated:    initiated,
+		})
+
+		if len(uploads) >= maxUploads {
+			break
+		}
+	}
+
+	resp := ListMultipartUploadsResult{
+		XMLNS:       S3XMLNamespace,
+		Bucket:      bucket,
+		MaxUploads:  maxUploads,
+		IsTruncated: len(uploads) >= maxUploads,
+		Prefix:      prefix,
+		Uploads:     uploads,
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode ListMultipartUploads XML", "bucket", bucket, "err", err)
+	}
 }

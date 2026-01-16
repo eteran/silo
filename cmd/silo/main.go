@@ -54,10 +54,10 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	cfg := core.Config{
-		DataDir: absDataDir,
-		Region:  Region,
-	}
+	cfg := core.NewConfig(
+		core.WithDataDir(absDataDir),
+		core.WithRegion(Region),
+	)
 
 	server, err := core.NewServer(ctx, cfg)
 	if err != nil {
