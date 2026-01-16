@@ -2070,36 +2070,21 @@ func (s *Server) handleCompleteMultipartUpload(ctx context.Context, w http.Respo
 			return
 		}
 
-		for {
-			n, err := pf.Read(buf)
-			if n > 0 {
-				if _, werr := finalFile.Write(buf[:n]); werr != nil {
-					_ = pf.Close()
-					slog.Error("Write to final multipart file", "bucket", bucket, "key", key, "err", werr)
-					writeInternalError(w, r)
-					return
-				}
-				if _, herr := h.Write(buf[:n]); herr != nil {
-					_ = pf.Close()
-					slog.Error("Hash final multipart payload", "bucket", bucket, "key", key, "err", herr)
-					writeInternalError(w, r)
-					return
-				}
-				totalSize += int64(n)
+		defer func() {
+			if err := pf.Close(); err != nil {
+				slog.Debug("Failed to close upload part file after complete", "path", partPath, "err", err)
 			}
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					_ = pf.Close()
-					slog.Error("Read upload part file", "path", partPath, "err", err)
-					writeInternalError(w, r)
-				}
-				break
-			}
-		}
+		}()
 
-		if err := pf.Close(); err != nil {
-			slog.Debug("Failed to close upload part file during complete", "path", partPath, "err", err)
+		// Stream the part into the final file while simultaneously hashing it
+		// using a TeeReader to avoid manually duplicating writes.
+		n, err := io.CopyBuffer(finalFile, io.TeeReader(pf, h), buf)
+		if err != nil {
+			slog.Error("Stream upload part into final file", "bucket", bucket, "key", key, "path", partPath, "err", err)
+			writeInternalError(w, r)
+			return
 		}
+		totalSize += n
 	}
 
 	hashHex := hex.EncodeToString(h.Sum(nil))
