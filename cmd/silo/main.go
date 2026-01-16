@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"silo/internal/auth"
 	"silo/internal/core"
+	"silo/internal/storage"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -57,6 +59,8 @@ func Run(ctx context.Context) error {
 	cfg := core.NewConfig(
 		core.WithDataDir(absDataDir),
 		core.WithRegion(Region),
+		core.WithAuthEngine(auth.NewAwsHmacAuthEngine()),
+		core.WithStorageEngine(storage.NewLocalFileStorage(absDataDir)),
 	)
 
 	server, err := core.NewServer(ctx, cfg)
