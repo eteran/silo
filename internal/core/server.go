@@ -284,6 +284,7 @@ func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decod
 
 	h := sha256.New()
 	var written int64
+	buf := make([]byte, 32*1024)
 
 	for {
 		// Each chunk begins with: <size-hex>[;extensions]\r\n
@@ -320,23 +321,17 @@ func (s *Server) decodeStreamingPayloadToTemp(f io.Writer, body io.Reader, decod
 			break
 		}
 
-		remaining := size
-		buf := make([]byte, 32*1024)
-		for remaining > 0 {
-			toRead := min(remaining, int64(len(buf)))
-			n, err := io.ReadFull(br, buf[:toRead])
-			if err != nil {
-				return 0, "", fmt.Errorf("read chunk body: %w", err)
-			}
-			if _, err := f.Write(buf[:n]); err != nil {
-				return 0, "", fmt.Errorf("write chunk to temp file: %w", err)
-			}
-			if _, err := h.Write(buf[:n]); err != nil {
-				return 0, "", fmt.Errorf("hash chunk: %w", err)
-			}
-			written += int64(n)
-			remaining -= int64(n)
+		// Stream this chunk through a TeeReader so it is hashed and
+		// written to the destination in a single pass.
+		limited := &io.LimitedReader{R: br, N: size}
+		n, err := io.CopyBuffer(f, io.TeeReader(limited, h), buf)
+		if err != nil {
+			return 0, "", fmt.Errorf("read chunk body: %w", err)
 		}
+		if n != size {
+			return 0, "", fmt.Errorf("short read while reading chunk body: expected %d bytes, got %d", size, n)
+		}
+		written += n
 
 		// Consume the trailing CRLF after the chunk body.
 		if b, err := br.ReadByte(); err != nil || b != '\r' {
