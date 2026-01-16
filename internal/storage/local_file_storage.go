@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // LocalFileStorage is a StorageEngine implementation that stores object
@@ -41,6 +43,12 @@ func (s *LocalFileStorage) PutObject(bucket string, hashHex string, data []byte)
 		return err
 	}
 
+	lock, err := acquireLock(objPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
 	return os.WriteFile(objPath, data, 0o644)
 }
 
@@ -58,6 +66,12 @@ func (s *LocalFileStorage) PutObjectFromFile(bucket string, hashHex string, temp
 		return err
 	}
 
+	lock, err := acquireLock(objPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
 	if err := os.Rename(tempPath, objPath); err != nil {
 		return err
 	}
@@ -67,17 +81,76 @@ func (s *LocalFileStorage) PutObjectFromFile(bucket string, hashHex string, temp
 
 // GetObject retrieves the object payload identified by hashHex.
 func (s *LocalFileStorage) GetObject(bucket string, hashHex string) ([]byte, error) {
+
 	objPath, err := ObjectPath(s.dataDir, hashHex)
 	if err != nil {
 		return nil, err
 	}
+
+	lock, err := acquireLock(objPath)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Unlock()
+
 	return os.ReadFile(objPath)
 }
 
 func (s *LocalFileStorage) DeleteObject(bucket string, hashHex string) error {
 	// Intentionally a no-op for now; garbage collection of unreferenced
 	// payloads can be implemented separately.
-	_ = bucket
-	_ = hashHex
+
 	return nil
+}
+
+// FileLock represents a best-effort, per-path lock implemented via a
+// companion ".lock" file. It is intended for coarse-grained mutual
+// exclusion around writes in a single-node deployment.
+type FileLock struct {
+	path string
+}
+
+// acquireLock attempts to create a lock file next to the target path
+// using O_CREATE|O_EXCL, retrying for a short bounded period if the lock
+// already exists.
+func acquireLock(targetPath string) (*FileLock, error) {
+	lockPath := targetPath + ".lock"
+	const (
+		MaxWait   = 5 * time.Second
+		SleepStep = 10 * time.Millisecond
+	)
+
+	deadline := time.Now().Add(MaxWait)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			// Successfully created the lock file; we no longer need the handle.
+			_ = f.Close()
+			return &FileLock{path: lockPath}, nil
+		}
+
+		if !errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("acquire lock for %s: %w", targetPath, err)
+		}
+
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout acquiring lock for %s", targetPath)
+		}
+
+		time.Sleep(SleepStep)
+	}
+}
+
+// Unlock releases the file-based lock. Errors are ignored except for the
+// case where the lock file unexpectedly persists, which is benign for Silo's
+// single-node usage.
+func (l *FileLock) Unlock() {
+	if l == nil || l.path == "" {
+		return
+	}
+
+	if err := os.Remove(l.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Best-effort cleanup; ignore failures.
+		_ = err
+	}
 }

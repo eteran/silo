@@ -1,10 +1,14 @@
 package storage_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"path/filepath"
 	"silo/internal/storage"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -87,4 +91,81 @@ func TestLocalFileStorageHardLinksAcrossBuckets(t *testing.T) {
 	info, err := os.Stat(objPath)
 	require.NoError(t, err, "expected single object file for shared payload")
 	require.False(t, info.IsDir(), "object path should be a file")
+}
+
+// TestLocalFileStorageConcurrentPutObject verifies that concurrent PutObject
+// calls for the same hash do not race or corrupt the stored file when using
+// the file-based locking mechanism.
+func TestLocalFileStorageConcurrentPutObject(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	engine := storage.NewLocalFileStorage(dataDir)
+	const bucket = "concurrent-bucket"
+
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 1024) // 16 KiB
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+
+	var wg sync.WaitGroup
+	concurrency := 8
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each goroutine attempts to write the same object; all should
+			// succeed without data corruption.
+			require.NoError(t, engine.PutObject(bucket, hashHex, payload))
+		}()
+	}
+	wg.Wait()
+
+	objPath, err := storage.ObjectPath(dataDir, hashHex)
+	require.NoError(t, err, "ObjectPath error")
+
+	data, err := os.ReadFile(objPath)
+	require.NoError(t, err, "reading stored object")
+	require.Equal(t, payload, data, "concurrent writes should not corrupt payload")
+}
+
+// TestLocalFileStorageConcurrentPutObjectFromFile verifies that concurrent
+// PutObjectFromFile calls for the same hash do not race in a way that
+// corrupts the final stored file.
+func TestLocalFileStorageConcurrentPutObjectFromFile(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	engine := storage.NewLocalFileStorage(dataDir)
+	const bucket = "concurrent-file-bucket"
+
+	payload := bytes.Repeat([]byte("abcdef0123456789"), 1024) // 16 KiB
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+
+	tempRoot := filepath.Join(dataDir, "tmp")
+	require.NoError(t, os.MkdirAll(tempRoot, 0o755))
+
+	var wg sync.WaitGroup
+	concurrency := 4
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			tempPath := filepath.Join(tempRoot, fmt.Sprintf("upload-%d.tmp", idx))
+			require.NoError(t, os.WriteFile(tempPath, payload, 0o644))
+
+			// Size is not currently used by PutObjectFromFile, but pass the
+			// actual payload length for clarity.
+			require.NoError(t, engine.PutObjectFromFile(bucket, hashHex, tempPath, int64(len(payload))))
+		}(i)
+	}
+	wg.Wait()
+
+	objPath, err := storage.ObjectPath(dataDir, hashHex)
+	require.NoError(t, err, "ObjectPath error")
+
+	data, err := os.ReadFile(objPath)
+	require.NoError(t, err, "reading stored object")
+	require.Equal(t, payload, data, "concurrent PutObjectFromFile writes should not corrupt payload")
 }
