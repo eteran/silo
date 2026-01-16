@@ -550,7 +550,7 @@ func (s *Server) handleBucketPost(ctx context.Context, w http.ResponseWriter, r 
 	q := r.URL.Query()
 	switch {
 	case q.Has("delete"):
-		s.writeNotImplemented(w, r, "DeleteObjects")
+		s.handleDeleteObjects(ctx, w, r, bucket)
 	default:
 		s.writeNotImplemented(w, r, "BucketPost")
 	}
@@ -1074,6 +1074,57 @@ func (s *Server) handleDeleteObjectTagging(ctx context.Context, w http.ResponseW
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteObjects implements the multi-object delete API:
+// POST /bucket?delete
+func (s *Server) handleDeleteObjects(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string) {
+	// Ensure bucket exists; do not auto-create.
+	if exists, err := s.bucketExists(ctx, bucket); err != nil {
+		slog.Error("DeleteObjects bucket lookup", "bucket", bucket, "err", err)
+		writeInternalError(w, r)
+		return
+	} else if !exists {
+		writeNoSuchBucketError(w, r)
+		return
+	}
+
+	defer r.Body.Close()
+	var req DeleteObjectsRequest
+	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Error("Decode DeleteObjects XML", "bucket", bucket, "err", err)
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Objects) == 0 {
+		writeS3Error(w, "InvalidRequest", "You must specify at least one object to delete.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
+	deleted := make([]DeletedObject, 0, len(req.Objects))
+	for _, obj := range req.Objects {
+		if obj.Key == "" {
+			continue
+		}
+
+		if _, err := s.Db.ExecContext(ctx, `DELETE FROM objects WHERE bucket = ? AND key = ?`, bucket, obj.Key); err != nil {
+			slog.Error("DeleteObjects delete row", "bucket", bucket, "key", obj.Key, "err", err)
+			writeInternalError(w, r)
+			return
+		}
+
+		deleted = append(deleted, DeletedObject{Key: obj.Key})
+	}
+
+	resp := DeleteResult{
+		XMLNS:   S3XMLNamespace,
+		Deleted: deleted,
+	}
+
+	if err := writeXMLResponse(w, resp); err != nil {
+		slog.Error("Encode DeleteObjects XML", "bucket", bucket, "err", err)
+	}
 }
 
 func (s *Server) handleGetObject(ctx context.Context, w http.ResponseWriter, r *http.Request, bucket string, key string) {

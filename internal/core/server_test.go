@@ -1051,11 +1051,6 @@ func TestNotImplementedRoutes(t *testing.T) {
 			method: http.MethodDelete,
 			path:   "/bucket?replication",
 		},
-		{
-			name:   "DeleteObjects",
-			method: http.MethodPost,
-			path:   "/bucket?delete",
-		},
 	}
 
 	for _, tc := range tests {
@@ -1118,6 +1113,68 @@ func TestListMultipartUploads(t *testing.T) {
 	u := listResult.Uploads[0]
 	require.Equal(t, key, u.Key, "upload key")
 	require.Equal(t, initResult.UploadID, u.UploadID, "upload ID")
+}
+
+// TestDeleteObjectsMultiDelete verifies that POST /bucket?delete removes
+// multiple objects in a single request and returns them in the DeleteResult
+// response.
+func TestDeleteObjectsMultiDelete(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+
+	const (
+		bucket = "multi-delete-bucket"
+		key1   = "obj-1.txt"
+		key2   = "obj-2.txt"
+	)
+
+	// Create bucket and two objects.
+	resp := DoPut(t, httpSrv.URL+"/"+bucket)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "PUT bucket status")
+
+	body1 := []byte("first")
+	body2 := []byte("second")
+
+	put1 := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key1, WithContent(body1))
+	defer put1.Body.Close()
+	require.Equal(t, http.StatusOK, put1.StatusCode, "PUT object 1 status")
+
+	put2 := DoPut(t, httpSrv.URL+"/"+bucket+"/"+key2, WithContent(body2))
+	defer put2.Body.Close()
+	require.Equal(t, http.StatusOK, put2.StatusCode, "PUT object 2 status")
+
+	// Issue multi-delete request.
+	deleteReq := core.DeleteObjectsRequest{
+		Objects: []core.DeleteObject{
+			{Key: key1},
+			{Key: key2},
+		},
+	}
+
+	delResp := DoMethod(t, http.MethodPost, httpSrv.URL+"/"+bucket+"?delete", WithXMLBody(t, deleteReq))
+	defer delResp.Body.Close()
+	require.Equal(t, http.StatusOK, delResp.StatusCode, "DeleteObjects status")
+
+	var delResult core.DeleteResult
+	require.NoError(t, xml.NewDecoder(delResp.Body).Decode(&delResult), "decoding DeleteResult")
+
+	deletedKeys := map[string]bool{}
+	for _, d := range delResult.Deleted {
+		deletedKeys[d.Key] = true
+	}
+	require.True(t, deletedKeys[key1], "expected key1 in DeleteResult")
+	require.True(t, deletedKeys[key2], "expected key2 in DeleteResult")
+
+	// Subsequent GETs should return NoSuchKey.
+	get1 := DoGet(t, httpSrv.URL+"/"+bucket+"/"+key1)
+	defer get1.Body.Close()
+	require.Equal(t, http.StatusNotFound, get1.StatusCode, "GET deleted object 1 status")
+
+	get2 := DoGet(t, httpSrv.URL+"/"+bucket+"/"+key2)
+	defer get2.Body.Close()
+	require.Equal(t, http.StatusNotFound, get2.StatusCode, "GET deleted object 2 status")
 }
 
 func TestDeleteBucketRemovesMetadata(t *testing.T) {

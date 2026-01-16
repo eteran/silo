@@ -103,6 +103,7 @@ The table below summarizes which S3-style features are implemented.
 | Delete bucket  | `DELETE /{bucket}`                     | Implemented     | Deletes bucket and associated metadata.        |
 | Location       | `GET /{bucket}?location`               | Implemented     | Configurable via SILO_S3_REGION                |
 | Bucket tagging | `PUT/GET/DELETE /{bucket}?tagging`     | Implemented     | Simple key/value tags stored in metadata.      |
+| Multi-delete   | `POST /{bucket}?delete`                | Implemented     | Deletes multiple objects in a single request.  |
 | Versioning     | `PUT/GET /{bucket}?versioning`         | Not implemented |                                                |
 | Encryption     | `PUT/GET/DELETE /{bucket}?encryption`  | Not implemented |                                                |
 | CORS           | `PUT/GET/DELETE /{bucket}?cors`        | Not implemented |                                                |
@@ -110,7 +111,7 @@ The table below summarizes which S3-style features are implemented.
 | Notifications  | `PUT/GET /{bucket}?notification`       | Not implemented |                                                |
 | Policy         | `PUT/GET/DELETE /{bucket}?policy`      | Not implemented |                                                |
 | Replication    | `PUT/GET/DELETE /{bucket}?replication` | Not implemented |                                                |
-| Multi-delete   | `POST /{bucket}?delete`                | Not implemented |                                                |
+
 
 ### Objects
 

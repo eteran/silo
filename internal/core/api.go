@@ -187,3 +187,29 @@ type Tagging struct {
 	XMLNS   string   `xml:"xmlns,attr,omitempty"`
 	TagSet  []Tag    `xml:"TagSet>Tag"`
 }
+
+// DeleteObject represents a single object entry in a multi-object delete
+// request or response.
+type DeleteObject struct {
+	Key string `xml:"Key"`
+}
+
+// DeleteObjectsRequest represents the XML payload for the S3 DeleteObjects
+// API: POST /bucket?delete
+type DeleteObjectsRequest struct {
+	XMLName xml.Name       `xml:"Delete"`
+	Objects []DeleteObject `xml:"Object"`
+}
+
+// DeletedObject represents a successfully deleted object entry in a
+// DeleteResult response.
+type DeletedObject struct {
+	Key string `xml:"Key"`
+}
+
+// DeleteResult represents the XML response for the DeleteObjects API.
+type DeleteResult struct {
+	XMLName xml.Name        `xml:"DeleteResult"`
+	XMLNS   string          `xml:"xmlns,attr"`
+	Deleted []DeletedObject `xml:"Deleted"`
+}
