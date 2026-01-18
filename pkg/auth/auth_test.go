@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eteran/silo/internal/auth"
+	"github.com/eteran/silo/pkg/auth"
 
 	"github.com/stretchr/testify/require"
 )

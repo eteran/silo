@@ -25,8 +25,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eteran/silo/internal/auth"
-	"github.com/eteran/silo/internal/storage"
+	"github.com/eteran/silo/pkg/auth"
+	"github.com/eteran/silo/pkg/storage"
 
 	"github.com/google/uuid"
 

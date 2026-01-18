@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eteran/silo/internal/core"
-	"github.com/eteran/silo/internal/storage"
+	"github.com/eteran/silo/pkg/core"
+	"github.com/eteran/silo/pkg/storage"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/eteran/silo/internal/storage"
+	"github.com/eteran/silo/pkg/storage"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
