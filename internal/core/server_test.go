@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"silo/internal/core"
+	"silo/internal/storage"
 	"strings"
 	"testing"
 	"time"
@@ -256,10 +257,11 @@ func TestObjectStoredBySHA256Path(t *testing.T) {
 	// Compute expected SHA-256-based path.
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
-	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
 
-	_, err := os.Stat(objPath)
+	objPath, err := storage.ObjectPath(srv.Config.DataDir, hashHex)
+	require.NoErrorf(t, err, "computing object path for %s", hashHex)
+
+	_, err = os.Stat(objPath)
 	require.NoErrorf(t, err, "expected object file at %s", objPath)
 }
 
@@ -632,8 +634,8 @@ func TestCopyObjectWithinBucket(t *testing.T) {
 	// Verify that the payload file exists in the expected location for this bucket.
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
-	subdir := hashHex[:2]
-	path := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
+	path, err := storage.ObjectPath(srv.Config.DataDir, hashHex)
+	require.NoErrorf(t, err, "computing object path for %s", hashHex)
 
 	info, err := os.Stat(path)
 	require.NoError(t, err, "expected payload file to exist")
@@ -664,8 +666,8 @@ func TestGetObjectMissingPayloadReturnsInternalError(t *testing.T) {
 	// Delete the underlying payload file from disk while leaving metadata.
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
-	subdir := hashHex[:2]
-	objPath := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
+	objPath, err := storage.ObjectPath(srv.Config.DataDir, hashHex)
+	require.NoErrorf(t, err, "computing object path for %s", hashHex)
 	require.NoError(t, os.Remove(objPath), "removing payload file")
 
 	// GET should now fail with 500 Internal Server Error due to missing payload.
@@ -748,8 +750,9 @@ func TestCopyObjectMissingPayloadOnSourceIgnoresError(t *testing.T) {
 	// Delete the underlying payload file for the source object.
 	sum := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(sum[:])
-	subdir := hashHex[:2]
-	srcPath := filepath.Join(srv.Config.DataDir, "objects", subdir, hashHex)
+
+	srcPath, err := storage.ObjectPath(srv.Config.DataDir, hashHex)
+	require.NoErrorf(t, err, "computing object path for %s", hashHex)
 	require.NoError(t, os.Remove(srcPath), "removing source payload file")
 
 	// Attempt to CopyObject; metadata exists but payload is gone.

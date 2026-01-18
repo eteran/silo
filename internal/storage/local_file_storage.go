@@ -37,10 +37,10 @@ func NewLocalFileStorageWithGzip(dataDir string) *LocalFileStorage {
 // ObjectPath computes the full filesystem path for the object identified by
 // hashHex
 func ObjectPath(directory string, hashHex string) (string, error) {
-	if len(hashHex) < 2 {
+	if len(hashHex) < 4 {
 		return "", fmt.Errorf("invalid hash length: %d", len(hashHex))
 	}
-	subdir := hashHex[:2]
+	subdir := hashHex[:2] + string(os.PathSeparator) + hashHex[2:4]
 	return filepath.Join(directory, "objects", subdir, hashHex), nil
 }
 

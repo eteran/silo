@@ -170,8 +170,8 @@ details.
 Silo stores data in a single directory tree (configurable via `SILO_DATA_DIR`):
 
 - `data/metadata.sqlite` – SQLite database holding buckets, objects, tags, etc.
-- `data/objects/<hh>/<hash>` – content-addressed objects, where `<hash>` is
-  the SHA-256 of the payload and `<hh>` is its first two hex characters.
+- `data/objects/<HH>/<hh>/<hash>` – content-addressed objects, where `<hash>` is
+  the SHA-256 of the payload and `<HH>` is its first two hex characters, and `<hh>` is the next two hex characters.
 - `data/uploads/<uploadId>/part-000001` – temporary multipart upload parts.
 - `data/uploads/upload-*` - temporary streamed uploads.
 
