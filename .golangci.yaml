@@ -21,16 +21,15 @@ linters:
 
   settings:
     errcheck:
+      verbose: true
       exclude-functions:
         # Things commonly used in a defer statement
-        - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
         - (*database/sql.Tx).Rollback
+        - (*github.com/minio/minio-go/v7.Object).Close
+        - (*compress/gzip.Reader).Close
         - (*os.File).Close
-        - (io/fs.File).Close
-        - (io.ReadCloser).Close
-        - os.Remove
-        - os.RemoveAll
+        - (io.Closer).Close
 
     govet:
       enable:

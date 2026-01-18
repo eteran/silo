@@ -410,7 +410,7 @@ func (s *Server) handleListParts(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 
-	var numbers []int
+	numbers := make([]int, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -1097,7 +1097,7 @@ func (s *Server) handleDeleteObjects(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	deleted := make([]DeletedObject, 0, len(req.Objects))
+	deleted := make([]DeleteObject, 0, len(req.Objects))
 	for _, obj := range req.Objects {
 		if obj.Key == "" {
 			continue
@@ -1109,7 +1109,7 @@ func (s *Server) handleDeleteObjects(ctx context.Context, w http.ResponseWriter,
 			return
 		}
 
-		deleted = append(deleted, DeletedObject{Key: obj.Key})
+		deleted = append(deleted, obj)
 	}
 
 	resp := DeleteResult{

@@ -1390,7 +1390,7 @@ func TestExplicitMultipartUploadUsingMinioCore(t *testing.T) {
 	}
 
 	var full bytes.Buffer
-	var parts []minio.CompletePart
+	parts := make([]minio.CompletePart, 0, len(partData))
 
 	for i, data := range partData {
 		partNumber := i + 1

@@ -143,8 +143,8 @@ func MultipartUploadExample(ctx context.Context, client *minio.Client) error {
 		bytes.Repeat([]byte("CCCC"), 128*1024), // smaller last part
 	}
 
-	var parts []minio.CompletePart
 	totalLength := 0
+	parts := make([]minio.CompletePart, 0, len(partData))
 
 	for i, data := range partData {
 		partNumber := i + 1

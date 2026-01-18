@@ -10,10 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"silo/internal/storage"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 )
 
 func TestLocalFileStoragePutAndGet(t *testing.T) {
@@ -169,18 +169,17 @@ func TestLocalFileStorageConcurrentPutObject(t *testing.T) {
 	sum := sha256.Sum256(payload)
 	hashHex := hex.EncodeToString(sum[:])
 
-	var wg sync.WaitGroup
-	concurrency := 8
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	eg, _ := errgroup.WithContext(t.Context())
+
+	const concurrency = 8
+	for range concurrency {
+		eg.Go(func() error {
 			// Each goroutine attempts to write the same object; all should
 			// succeed without data corruption.
-			require.NoError(t, engine.PutObject(bucket, hashHex, payload))
-		}()
+			return engine.PutObject(bucket, hashHex, payload)
+		})
 	}
-	wg.Wait()
+	require.NoError(t, eg.Wait(), "concurrent PutObject calls should not error")
 
 	objPath, err := storage.ObjectPath(dataDir, hashHex)
 	require.NoError(t, err, "ObjectPath error")
@@ -207,22 +206,27 @@ func TestLocalFileStorageConcurrentPutObjectFromFile(t *testing.T) {
 	tempRoot := filepath.Join(dataDir, "tmp")
 	require.NoError(t, os.MkdirAll(tempRoot, 0o755))
 
-	var wg sync.WaitGroup
-	concurrency := 4
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
+	eg, _ := errgroup.WithContext(t.Context())
 
-			tempPath := filepath.Join(tempRoot, fmt.Sprintf("upload-%d.tmp", idx))
-			require.NoError(t, os.WriteFile(tempPath, payload, 0o644))
+	const concurrency = 4
+	for i := range concurrency {
 
-			// Size is not currently used by PutObjectFromFile, but pass the
-			// actual payload length for clarity.
-			require.NoError(t, engine.PutObjectFromFile(bucket, hashHex, tempPath, int64(len(payload))))
-		}(i)
+		eg.Go(func(idx int) func() error {
+			return func() error {
+				tempPath := filepath.Join(tempRoot, fmt.Sprintf("upload-%d.tmp", idx))
+				if err := os.WriteFile(tempPath, payload, 0o644); err != nil {
+					return err
+				}
+
+				if err := engine.PutObjectFromFile(bucket, hashHex, tempPath, int64(len(payload))); err != nil {
+					return err
+				}
+
+				return nil
+			}
+		}(i))
 	}
-	wg.Wait()
+	require.NoError(t, eg.Wait(), "concurrent PutObjectFromFile calls should not error")
 
 	objPath, err := storage.ObjectPath(dataDir, hashHex)
 	require.NoError(t, err, "ObjectPath error")

@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+const (
+	ObjectsSubdir = "objects"
+)
+
 // LocalFileStorage is a StorageEngine implementation that stores object
 // payloads on the local filesystem under a content-addressed layout rooted at
 // dataDir. Objects are addressed globally by their full SHA-256 hexadecimal
@@ -40,8 +44,13 @@ func ObjectPath(directory string, hashHex string) (string, error) {
 	if len(hashHex) < 4 {
 		return "", fmt.Errorf("invalid hash length: %d", len(hashHex))
 	}
-	subdir := hashHex[:2] + string(os.PathSeparator) + hashHex[2:4]
-	return filepath.Join(directory, "objects", subdir, hashHex), nil
+
+	return filepath.Join(
+		directory,
+		ObjectsSubdir,
+		hashHex[0:2],
+		hashHex[2:4],
+		hashHex), nil
 }
 
 // PutObject stores the given data as the object identified by hashHex.
