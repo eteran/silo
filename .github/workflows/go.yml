@@ -28,19 +28,6 @@ jobs:
 
       - name: Test
         run: go test -v ./...
-  golangci:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-
-      - name: Generate templ code
-        uses: capthiron/templ-generator-action@v1
-        with:
-          commit: "false"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
