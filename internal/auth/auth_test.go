@@ -5,10 +5,11 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
-	"silo/internal/auth"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eteran/silo/internal/auth"
 
 	"github.com/stretchr/testify/require"
 )

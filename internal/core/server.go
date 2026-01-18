@@ -20,12 +20,13 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"silo/internal/auth"
-	"silo/internal/storage"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/eteran/silo/internal/auth"
+	"github.com/eteran/silo/internal/storage"
 
 	"github.com/google/uuid"
 

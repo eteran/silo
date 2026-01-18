@@ -1,8 +1,8 @@
 package core
 
 import (
-	"silo/internal/auth"
-	"silo/internal/storage"
+	"github.com/eteran/silo/internal/auth"
+	"github.com/eteran/silo/internal/storage"
 )
 
 type Config struct {

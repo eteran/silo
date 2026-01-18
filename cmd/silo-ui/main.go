@@ -16,7 +16,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
-	"silo/internal/ui"
+	"github.com/eteran/silo/internal/ui"
 )
 
 var (

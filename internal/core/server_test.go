@@ -13,11 +13,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"silo/internal/core"
-	"silo/internal/storage"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eteran/silo/internal/core"
+	"github.com/eteran/silo/internal/storage"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"

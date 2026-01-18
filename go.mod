@@ -1,4 +1,4 @@
-module silo
+module github.com/eteran/silo
 
 go 1.24.5
 

@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"silo/internal/auth"
-	"silo/internal/core"
-	"silo/internal/storage"
 	"time"
+
+	"github.com/eteran/silo/internal/auth"
+	"github.com/eteran/silo/internal/core"
+	"github.com/eteran/silo/internal/storage"
 
 	"github.com/charmbracelet/log"
 	"golang.org/x/sync/errgroup"
