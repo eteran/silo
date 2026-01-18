@@ -37,6 +37,11 @@ jobs:
         with:
           go-version: stable
 
+      - name: Generate templ code
+        uses: capthiron/templ-generator-action@v1
+        with:
+          commit: "false"
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
