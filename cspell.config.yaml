@@ -6,9 +6,11 @@ words:
   - charmbracelet
   - davecgh
   - errgroup
+  - eteran
   - go-difflib
   - gopkg
   - mattn
+  - modernc
   - pmezard
   - stretchr
   - templ

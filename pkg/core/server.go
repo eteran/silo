@@ -29,8 +29,7 @@ import (
 	"github.com/eteran/silo/pkg/storage"
 
 	"github.com/google/uuid"
-
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -85,7 +84,7 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 
 	dbPath := path.Join(cfg.DataDir, "metadata.sqlite")
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
