@@ -1,5 +1,7 @@
 # Silo
 
+[![Go](https://github.com/eteran/silo/actions/workflows/go.yml/badge.svg)](https://github.com/eteran/silo/actions/workflows/go.yml)
+
 Silo is a small, fast, and self-contained S3-compatible object storage server.
 It is designed as a light-weight implementation suitable for development,
 testing, and small single-node deployments.
