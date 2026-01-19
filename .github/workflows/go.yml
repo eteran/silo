@@ -18,16 +18,36 @@ jobs:
         with:
           go-version: stable
 
-      - name: Generate templ code
-        uses: capthiron/templ-generator-action@v1
-        with:
-          commit: "false"
+      - name: Template Generation
+        run: go tool templ generate
 
       - name: Build
         run: go build -v ./...
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Template Generation
+        run: go tool templ generate
+
       - name: Test
         run: go test -v ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Template Generation
+        run: go tool templ generate
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
