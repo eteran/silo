@@ -11,7 +11,11 @@ func (s *Server) Handler() http.Handler {
 	// List all buckets
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		s.handleListBuckets(ctx, w, r)
+		s.handleRootGet(ctx, w, r)
+	})
+	mux.HandleFunc("POST /{$}", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		s.handleRootPost(ctx, w, r)
 	})
 
 	// Bucket-level operations

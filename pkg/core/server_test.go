@@ -1010,11 +1010,6 @@ func TestUnknownRoutes(t *testing.T) {
 		path   string
 	}{
 		{
-			name:   "POST root",
-			method: http.MethodPost,
-			path:   "/",
-		},
-		{
 			name:   "PATCH bucket",
 			method: http.MethodPatch,
 			path:   "/some-bucket",
@@ -1054,6 +1049,76 @@ func TestNotImplementedRoutes(t *testing.T) {
 			name:   "DeleteBucketReplication",
 			method: http.MethodDelete,
 			path:   "/bucket?replication",
+		},
+		{
+			name:   "PutBucketAnalyticsConfiguration",
+			method: http.MethodPut,
+			path:   "/bucket?analytics",
+		},
+		{
+			name:   "GetBucketAnalyticsConfiguration",
+			method: http.MethodGet,
+			path:   "/bucket?analytics",
+		},
+		{
+			name:   "DeleteBucketAnalyticsConfiguration",
+			method: http.MethodDelete,
+			path:   "/bucket?analytics",
+		},
+		{
+			name:   "PutObjectLockConfiguration",
+			method: http.MethodPut,
+			path:   "/bucket?object-lock",
+		},
+		{
+			name:   "GetObjectLockConfiguration",
+			method: http.MethodGet,
+			path:   "/bucket?object-lock",
+		},
+		{
+			name:   "GetObjectAcl",
+			method: http.MethodGet,
+			path:   "/bucket/object?acl",
+		},
+		{
+			name:   "PutObjectAcl",
+			method: http.MethodPut,
+			path:   "/bucket/object?acl",
+		},
+		{
+			name:   "GetObjectRetention",
+			method: http.MethodGet,
+			path:   "/bucket/object?retention",
+		},
+		{
+			name:   "PutObjectRetention",
+			method: http.MethodPut,
+			path:   "/bucket/object?retention",
+		},
+		{
+			name:   "GetObjectLegalHold",
+			method: http.MethodGet,
+			path:   "/bucket/object?legal-hold",
+		},
+		{
+			name:   "PutObjectLegalHold",
+			method: http.MethodPut,
+			path:   "/bucket/object?legal-hold",
+		},
+		{
+			name:   "ListDirectoryBuckets",
+			method: http.MethodGet,
+			path:   "/?x-id=ListDirectoryBuckets",
+		},
+		{
+			name:   "CreateSession",
+			method: http.MethodPost,
+			path:   "/?x-id=CreateSession",
+		},
+		{
+			name:   "RootPostWithoutXID",
+			method: http.MethodPost,
+			path:   "/",
 		},
 	}
 

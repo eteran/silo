@@ -70,7 +70,7 @@ Whe main Silo executable supports configuration via environment variables.
 ### Default credentials
 
 Silo supports both Basic Auth and AWS Signature V4. By default it uses
-static credentials that match MinIO's defaults:
+static credentials that are similar to MinIO's defaults:
 
 - Access key: `siloadmin`
 - Secret key: `siloadmin`
@@ -97,37 +97,42 @@ The table below summarizes which S3-style features are implemented.
 
 ### Buckets
 
-| Category       | API / Behavior                         | Status          | Notes                                          |
-| -------------- | -------------------------------------- | --------------- | ---------------------------------------------- |
-| List buckets   | `GET /` (ListBuckets)                  | Implemented     | Returns all buckets owned by the default user. |
-| Create bucket  | `PUT /{bucket}`                        | Implemented     | Validates bucket name; creates metadata row.   |
-| Head bucket    | `HEAD /{bucket}`                       | Implemented     | 200 if exists, 404 if not.                     |
-| Delete bucket  | `DELETE /{bucket}`                     | Implemented     | Deletes bucket and associated metadata.        |
-| Location       | `GET /{bucket}?location`               | Implemented     | Configurable via SILO_S3_REGION                |
-| Bucket tagging | `PUT/GET/DELETE /{bucket}?tagging`     | Implemented     | Simple key/value tags stored in metadata.      |
-| Multi-delete   | `POST /{bucket}?delete`                | Implemented     | Deletes multiple objects in a single request.  |
-| Versioning     | `PUT/GET /{bucket}?versioning`         | Not implemented |                                                |
-| Encryption     | `PUT/GET/DELETE /{bucket}?encryption`  | Not implemented |                                                |
-| CORS           | `PUT/GET/DELETE /{bucket}?cors`        | Not implemented |                                                |
-| Lifecycle      | `PUT/GET/DELETE /{bucket}?lifecycle`   | Not implemented |                                                |
-| Notifications  | `PUT/GET /{bucket}?notification`       | Not implemented |                                                |
-| Policy         | `PUT/GET/DELETE /{bucket}?policy`      | Not implemented |                                                |
-| Replication    | `PUT/GET/DELETE /{bucket}?replication` | Not implemented |                                                |
+| Category              | API / Behavior                               | Status          | Notes                                          |
+| --------------------- | -------------------------------------------- | --------------- | ---------------------------------------------- |
+| List buckets          | `GET /` (ListBuckets)                        | Implemented     | Returns all buckets owned by the default user. |
+| Create bucket         | `PUT /{bucket}`                              | Implemented     | Validates bucket name; creates metadata row.   |
+| Head bucket           | `HEAD /{bucket}`                             | Implemented     | 200 if exists, 404 if not.                     |
+| Delete bucket         | `DELETE /{bucket}`                           | Implemented     | Deletes bucket and associated metadata.        |
+| Location              | `GET /{bucket}?location`                     | Implemented     | Configurable via SILO_S3_REGION                |
+| Bucket tagging        | `PUT/GET/DELETE /{bucket}?tagging`           | Implemented     | Simple key/value tags stored in metadata.      |
+| Multi-delete          | `POST /{bucket}?delete`                      | Implemented     | Deletes multiple objects in a single request.  |
+| Versioning            | `PUT/GET /{bucket}?versioning`               | Not implemented |                                                |
+| Encryption            | `PUT/GET/DELETE /{bucket}?encryption`        | Not implemented |                                                |
+| CORS                  | `PUT/GET/DELETE /{bucket}?cors`              | Not implemented |                                                |
+| Lifecycle             | `PUT/GET/DELETE /{bucket}?lifecycle`         | Not implemented |                                                |
+| Notifications         | `PUT/GET /{bucket}?notification`             | Not implemented |                                                |
+| Policy                | `PUT/GET/DELETE /{bucket}?policy`            | Not implemented |                                                |
+| Replication           | `PUT/GET/DELETE /{bucket}?replication`       | Not implemented |                                                |
+| Object lock config    | `PUT/GET /{bucket}?object-lock`              | Not implemented |                                                |
+| Analytics             | `PUT/GET/DELETE /{bucket}?analytics`         | Not implemented |                                                |
 
 
 ### Objects
 
-| Category            | API / Behavior                                 | Status          | Notes                                                       |
-| ------------------- | ---------------------------------------------- | --------------- | ----------------------------------------------------------- |
-| Put object          | `PUT /{bucket}/{key}`                          | Implemented     | Stores payload as SHA-256 blob on disk, metadata in SQLite. |
-| Get object          | `GET /{bucket}/{key}`                          | Implemented     | Streams from local storage.                                 |
-| Head object         | `HEAD /{bucket}/{key}`                         | Implemented     | Returns metadata and content length/type.                   |
-| Delete object       | `DELETE /{bucket}/{key}`                       | Implemented     | Removes metadata and underlying blob (if unreferenced).     |
-| Object tagging      | `PUT/GET/DELETE /{bucket}/{key}?tagging`       | Implemented     | Object-level tags.                                          |
-| Copy object         | `PUT /{bucket}/{key}` with `x-amz-copy-source` | Implemented     | Copies metadata; payload must exist. No multipart copy.     |
-| Get attributes      | `GET /{bucket}/{key}?attributes`               | Not implemented |                                                             |
-| Restore object      | `POST /{bucket}/{key}?restore`                 | Not implemented |                                                             |
-| SelectObjectContent | `POST /{bucket}/{key}?select`                  | Not implemented |                                                             |
+| Category             | API / Behavior                                 | Status          | Notes                                                       |
+| -------------------- | ---------------------------------------------- | --------------- | ----------------------------------------------------------- |
+| Put object           | `PUT /{bucket}/{key}`                          | Implemented     | Stores payload as SHA-256 blob on disk, metadata in SQLite. |
+| Get object           | `GET /{bucket}/{key}`                          | Implemented     | Streams from local storage.                                 |
+| Head object          | `HEAD /{bucket}/{key}`                         | Implemented     | Returns metadata and content length/type.                   |
+| Delete object        | `DELETE /{bucket}/{key}`                       | Implemented     | Removes metadata and underlying blob (if unreferenced).     |
+| Object tagging       | `PUT/GET/DELETE /{bucket}/{key}?tagging`       | Implemented     | Object-level tags.                                          |
+| Copy object          | `PUT /{bucket}/{key}` with `x-amz-copy-source` | Implemented     | Copies metadata; payload must exist. No multipart copy.     |
+| Object ACL           | `PUT/GET /{bucket}/{key}?acl`                  | Not implemented |                                                             |
+| Object retention     | `PUT/GET /{bucket}/{key}?retention`            | Not implemented |                                                             |
+| Object legal hold    | `PUT/GET /{bucket}/{key}?legal-hold`           | Not implemented |                                                             |
+| Get attributes       | `GET /{bucket}/{key}?attributes`               | Not implemented |                                                             |
+| Restore object       | `POST /{bucket}/{key}?restore`                 | Not implemented |                                                             |
+| SelectObjectContent  | `POST /{bucket}/{key}?select`                  | Not implemented |                                                             |
 
 ### Listing
 
@@ -148,6 +153,13 @@ The table below summarizes which S3-style features are implemented.
 | ListParts               | `GET /{bucket}/{key}?uploadId=ID`                        | Implemented     | Returns part list with size, ETag, pagination.                        |
 | UploadPartCopy          | `PUT ...?uploadId=ID&partNumber=N` + `x-amz-copy-source` | Not implemented |                                                                       |
 | ListMultipartUploads    | `GET /{bucket}?uploads`                                  | Implemented     | Lists in-progress multipart uploads for the bucket                    |
+
+### Service-level / other
+
+| Category          | API / Behavior                    | Status          | Notes                                          |
+| ----------------- | --------------------------------- | --------------- | ---------------------------------------------- |
+| Directory buckets | `GET /?x-id=ListDirectoryBuckets` | Not implemented |                                                |
+| CreateSession     | `POST /?x-id=CreateSession`       | Not implemented |                                                |
 
 ### Authentication & Security
 

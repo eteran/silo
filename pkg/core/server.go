@@ -518,6 +518,8 @@ func (s *Server) handleBucketPut(ctx context.Context, w http.ResponseWriter, r *
 
 	q := r.URL.Query()
 	switch {
+	case q.Has("analytics"):
+		s.writeNotImplemented(w, r, "PutBucketAnalyticsConfiguration")
 	case q.Has("tagging"):
 		s.handlePutBucketTagging(ctx, w, r, bucket)
 	case q.Has("versioning"):
@@ -534,6 +536,8 @@ func (s *Server) handleBucketPut(ctx context.Context, w http.ResponseWriter, r *
 		s.writeNotImplemented(w, r, "PutBucketPolicy")
 	case q.Has("replication"):
 		s.writeNotImplemented(w, r, "PutBucketReplication")
+	case q.Has("object-lock"):
+		s.writeNotImplemented(w, r, "PutObjectLockConfiguration")
 	default:
 		s.handleCreateBucket(ctx, w, r, bucket)
 	}
@@ -565,6 +569,8 @@ func (s *Server) handleBucketGet(ctx context.Context, w http.ResponseWriter, r *
 	switch {
 	case q.Has("location"):
 		s.handleGetBucketLocation(ctx, w, r, bucket)
+	case q.Has("analytics"):
+		s.writeNotImplemented(w, r, "ListBucketAnalyticsConfigurations")
 	case q.Has("tagging"):
 		s.handleGetBucketTagging(ctx, w, r, bucket)
 	case q.Has("versioning"):
@@ -581,6 +587,8 @@ func (s *Server) handleBucketGet(ctx context.Context, w http.ResponseWriter, r *
 		s.writeNotImplemented(w, r, "GetBucketPolicy")
 	case q.Has("replication"):
 		s.writeNotImplemented(w, r, "GetBucketReplication")
+	case q.Has("object-lock"):
+		s.writeNotImplemented(w, r, "GetObjectLockConfiguration")
 	case q.Get("list-type") == "2":
 		s.handleListObjectsV2(ctx, w, r, bucket)
 	case q.Has("versions"):
@@ -602,6 +610,8 @@ func (s *Server) handleBucketDelete(ctx context.Context, w http.ResponseWriter, 
 	switch {
 	case q.Has("tagging"):
 		s.handleDeleteBucketTagging(ctx, w, r, bucket)
+	case q.Has("analytics"):
+		s.writeNotImplemented(w, r, "DeleteBucketAnalyticsConfiguration")
 	case q.Has("encryption"):
 		s.writeNotImplemented(w, r, "DeleteBucketEncryption")
 	case q.Has("cors"):
@@ -659,7 +669,10 @@ func (s *Server) handleObjectPost(ctx context.Context, w http.ResponseWriter, r 
 		uploadID := q.Get("uploadId")
 		// CompleteMultipartUpload
 		s.handleCompleteMultipartUpload(ctx, w, r, bucket, key, uploadID)
-	case q.Has("uploadId"):
+	case q.Has("retention"):
+		s.writeNotImplemented(w, r, "PutObjectRetention")
+	case q.Has("legal-hold"):
+		s.writeNotImplemented(w, r, "PutObjectLegalHold")
 	case q.Has("restore"):
 		s.writeNotImplemented(w, r, "RestoreObject")
 	case q.Has("select"):
@@ -680,8 +693,14 @@ func (s *Server) handleObjectGet(ctx context.Context, w http.ResponseWriter, r *
 
 	q := r.URL.Query()
 	switch {
+	case q.Has("acl"):
+		s.writeNotImplemented(w, r, "GetObjectAcl")
 	case q.Has("tagging"):
 		s.handleGetObjectTagging(ctx, w, r, bucket, key)
+	case q.Has("retention"):
+		s.writeNotImplemented(w, r, "GetObjectRetention")
+	case q.Has("legal-hold"):
+		s.writeNotImplemented(w, r, "GetObjectLegalHold")
 	case q.Has("attributes"):
 		s.writeNotImplemented(w, r, "GetObjectAttributes")
 	case q.Has("uploadId"):
@@ -723,6 +742,20 @@ func (s *Server) handleObjectPut(ctx context.Context, w http.ResponseWriter, r *
 	}
 
 	q := r.URL.Query()
+
+	// Object ACL and locking-related subresources
+	if q.Has("acl") {
+		s.writeNotImplemented(w, r, "PutObjectAcl")
+		return
+	}
+	if q.Has("retention") {
+		s.writeNotImplemented(w, r, "PutObjectRetention")
+		return
+	}
+	if q.Has("legal-hold") {
+		s.writeNotImplemented(w, r, "PutObjectLegalHold")
+		return
+	}
 
 	if uploadID := q.Get("uploadId"); uploadID != "" {
 		if partNumber := q.Get("partNumber"); partNumber != "" {
@@ -1363,8 +1396,14 @@ func (s *Server) handleDeleteBucketTagging(ctx context.Context, w http.ResponseW
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleListBuckets implements GET / to list all buckets.
-func (s *Server) handleListBuckets(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+// handleRootGet implements GET / to list all buckets.
+func (s *Server) handleRootGet(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if strings.EqualFold(q.Get("x-id"), "ListDirectoryBuckets") {
+		s.writeNotImplemented(w, r, "ListDirectoryBuckets")
+		return
+	}
+
 	rows, err := s.Db.QueryContext(ctx, `SELECT name, created_at FROM buckets ORDER BY name`)
 	if err != nil {
 		slog.Error("List buckets", "err", err)
@@ -1395,6 +1434,20 @@ func (s *Server) handleListBuckets(ctx context.Context, w http.ResponseWriter, r
 	if err := writeXMLResponse(w, resp); err != nil {
 		slog.Error("Encode list buckets XML", "err", err)
 	}
+}
+
+// handleRootPost dispatches POST /{$} operations at the service root, such as
+// CreateSession.
+func (s *Server) handleRootPost(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	_ = ctx
+
+	q := r.URL.Query()
+	if strings.EqualFold(q.Get("x-id"), "CreateSession") {
+		s.writeNotImplemented(w, r, "CreateSession")
+		return
+	}
+
+	s.writeNotImplemented(w, r, "RootPost")
 }
 
 // handleCopyObject implements a basic version of S3 CopyObject for
