@@ -13,7 +13,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,6 +39,8 @@ var (
 	// matches lowercase letters, digits, dots, and hyphens,
 	// must start and end with a letter or digit, and must be between 3 and 63 characters long.
 	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+	ipv4Pattern = regexp.MustCompile(`^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$`)
 )
 
 // Server provides a minimal S3-compatible HTTP API.
@@ -213,8 +214,10 @@ func isValidBucketName(name string) bool {
 	}
 
 	// Bucket name must not be formatted as an IPv4 address.
-	ip := net.ParseIP(name)
-	return ip == nil
+	if ipv4Pattern.MatchString(name) {
+		return false
+	}
+	return true
 }
 
 // isValidObjectKey enforces basic S3 object key constraints: non-empty,
