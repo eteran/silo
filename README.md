@@ -205,3 +205,13 @@ go test ./...
 During development, you can use the provided example and UI binaries under
 `cmd/example` and `cmd/silo-ui` as references for embedding or extending
 Silo.
+
+
+## UI
+
+The UI uses [templ](https://github.com/a-h/templ), in order to run the UI
+first you must run:
+
+```bash
+go tool templ generate
+```
