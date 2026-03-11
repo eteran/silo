@@ -1,18 +1,18 @@
 module github.com/eteran/silo
 
-go 1.24.5
+go 1.26
 
 tool github.com/a-h/templ/cmd/templ
 
 require (
-	github.com/a-h/templ v0.3.977
-	github.com/charmbracelet/log v0.4.2
+	github.com/a-h/templ v0.3.1001
+	github.com/charmbracelet/log v1.0.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/google/uuid v1.6.0
-	github.com/minio/minio-go/v7 v7.0.98
-	github.com/stretchr/testify v1.10.0
+	github.com/minio/minio-go/v7 v7.0.99
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.19.0
-	modernc.org/sqlite v1.44.2
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -30,7 +30,7 @@ require (
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
-	github.com/go-logfmt/logfmt v0.6.0 // indirect
+	github.com/go-logfmt/logfmt v0.6.1 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
