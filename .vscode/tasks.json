@@ -4,10 +4,11 @@
         {
             "label": "templ generate",
             "type": "shell",
-            "command": "templ",
+            "command": "go",
             "args": [
+                "tool",
+                "templ",
                 "generate",
-                "./..."
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
