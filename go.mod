@@ -1,6 +1,6 @@
 module github.com/eteran/silo
 
-go 1.26
+go 1.25
 
 tool github.com/a-h/templ/cmd/templ
 
