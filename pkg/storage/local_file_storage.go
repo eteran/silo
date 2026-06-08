@@ -8,12 +8,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
 const (
 	ObjectsSubdir = "objects"
 )
+
+var hashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // LocalFileStorage is a StorageEngine implementation that stores object
 // payloads on the local filesystem under a content-addressed layout rooted at
@@ -41,8 +44,8 @@ func NewLocalFileStorageWithGzip(dataDir string) *LocalFileStorage {
 // ObjectPath computes the full filesystem path for the object identified by
 // hashHex
 func ObjectPath(directory string, hashHex string) (string, error) {
-	if len(hashHex) < 4 {
-		return "", fmt.Errorf("invalid hash length: %d", len(hashHex))
+	if !hashPattern.MatchString(hashHex) {
+		return "", fmt.Errorf("invalid hash format")
 	}
 
 	return filepath.Join(
