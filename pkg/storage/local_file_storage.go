@@ -45,7 +45,7 @@ func NewLocalFileStorageWithGzip(dataDir string) *LocalFileStorage {
 // hashHex
 func ObjectPath(directory string, hashHex string) (string, error) {
 	if !hashPattern.MatchString(hashHex) {
-		return "", fmt.Errorf("invalid hash format")
+		return "", errors.New("invalid hash format")
 	}
 
 	return filepath.Join(
