@@ -1697,3 +1697,51 @@ func TestCompleteMultipartUploadAfterAbortUsingMinioCore(t *testing.T) {
 	errResp := minio.ToErrorResponse(err)
 	require.Equal(t, "NoSuchUpload", errResp.Code, "expected NoSuchUpload from server after abort")
 }
+
+func TestAbortMultipartUploadRejectsTraversalUploadID(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	const (
+		bucket = "multipart-traversal-bucket"
+		object = "multipart-traversal-object"
+	)
+
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	resp := DoDelete(t, fmt.Sprintf("%s/%s/%s?uploadId=%%2e%%2e", httpSrv.URL, bucket, object))
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "expected bad request for traversal uploadId")
+	require.Equal(t, "InvalidRequest", DecodeS3Error(t, resp.Body), "expected InvalidRequest error code")
+
+	head := DoHead(t, httpSrv.URL+"/"+bucket)
+	defer head.Body.Close()
+	require.Equal(t, http.StatusOK, head.StatusCode, "bucket should remain intact after invalid abort request")
+}
+
+func TestUploadPartRejectsTraversalUploadID(t *testing.T) {
+	t.Parallel()
+
+	_, httpSrv := NewTestServer(t)
+	ctx := t.Context()
+
+	const (
+		bucket = "multipart-uploadpart-traversal-bucket"
+		key    = "multipart-uploadpart-traversal-object"
+	)
+
+	client := newMinioClient(t, httpSrv)
+	require.NoError(t, client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: "us-east-1"}), "MakeBucket via MinIO client")
+
+	resp := DoPut(
+		t,
+		fmt.Sprintf("%s/%s/%s?partNumber=1&uploadId=%%2e%%2e", httpSrv.URL, bucket, key),
+		WithContent([]byte("multipart-part-data")),
+	)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "expected bad request for traversal uploadId on upload part")
+	require.Equal(t, "InvalidRequest", DecodeS3Error(t, resp.Body), "expected InvalidRequest error code")
+}

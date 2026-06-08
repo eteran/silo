@@ -51,12 +51,18 @@ func TestLocalFileStorageInvalidHash(t *testing.T) {
 	engine := storage.NewLocalFileStorage(dataDir)
 	const bucket = "example"
 
-	// Hash shorter than 2 characters should be rejected by objectPath.
+	// Invalid hash values should be rejected by ObjectPath validation.
 	err := engine.PutObject(bucket, "a", []byte("data"))
 	require.Error(t, err, "expected error for too-short hash")
 
+	err = engine.PutObject(bucket, "../../etc/passwd", []byte("data"))
+	require.Error(t, err, "expected error for traversal-like hash")
+
 	_, err = engine.GetObject(bucket, "a")
 	require.Error(t, err, "expected error for too-short hash on GetObject")
+
+	_, err = storage.ObjectPath(dataDir, "../../etc/passwd")
+	require.Error(t, err, "expected ObjectPath to reject traversal-like hash")
 }
 
 func TestLocalFileStorageDeleteIsNoop(t *testing.T) {

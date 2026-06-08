@@ -251,6 +251,28 @@ func validateObjectKeyOrError(w http.ResponseWriter, r *http.Request, key string
 	return true
 }
 
+// resolveMultipartUploadDir validates uploadID and resolves its directory
+// under the server's uploads root while preventing path traversal.
+func (s *Server) resolveMultipartUploadDir(uploadID string) (string, error) {
+	if _, err := uuid.Parse(uploadID); err != nil {
+		return "", fmt.Errorf("invalid upload id: %w", err)
+	}
+
+	uploadsRoot := filepath.Clean(filepath.Join(s.Config.DataDir, "uploads"))
+	uploadDir := filepath.Clean(filepath.Join(uploadsRoot, uploadID))
+
+	rel, err := filepath.Rel(uploadsRoot, uploadDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve upload path: %w", err)
+	}
+
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", errors.New("upload path escapes uploads root")
+	}
+
+	return uploadDir, nil
+}
+
 // writeXMLResponse encodes v as XML and writes it to w with a 200 OK status.
 func writeXMLResponse(w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/xml")
@@ -376,7 +398,12 @@ func (s *Server) handleListParts(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 
-	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	uploadDir, err := s.resolveMultipartUploadDir(uploadID)
+	if err != nil {
+		writeS3Error(w, "InvalidRequest", "The uploadId query parameter is invalid.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
 	if stat, err := os.Stat(uploadDir); err != nil || !stat.IsDir() {
 		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, http.StatusNotFound)
 		return
@@ -1934,7 +1961,13 @@ func (s *Server) handleCreateMultipartUpload(ctx context.Context, w http.Respons
 	}
 
 	uploadID := uuid.NewString()
-	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	uploadDir, err := s.resolveMultipartUploadDir(uploadID)
+	if err != nil {
+		slog.Error("Resolve multipart upload dir", "upload_id", uploadID, "err", err)
+		writeInternalError(w, r)
+		return
+	}
+
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		slog.Error("Create multipart upload dir", "path", uploadDir, "err", err)
 		writeInternalError(w, r)
@@ -1978,7 +2011,12 @@ func (s *Server) handleUploadPart(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 
-	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	uploadDir, err := s.resolveMultipartUploadDir(uploadID)
+	if err != nil {
+		writeS3Error(w, "InvalidRequest", "The uploadId query parameter is invalid.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
 	if stat, err := os.Stat(uploadDir); err != nil || !stat.IsDir() {
 		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, http.StatusNotFound)
 		return
@@ -2060,7 +2098,12 @@ func (s *Server) handleCompleteMultipartUpload(ctx context.Context, w http.Respo
 		return
 	}
 
-	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	uploadDir, err := s.resolveMultipartUploadDir(uploadID)
+	if err != nil {
+		writeS3Error(w, "InvalidRequest", "The uploadId query parameter is invalid.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
 	if stat, err := os.Stat(uploadDir); err != nil || !stat.IsDir() {
 		writeS3Error(w, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, http.StatusNotFound)
 		return
@@ -2186,7 +2229,12 @@ func (s *Server) handleAbortMultipartUpload(ctx context.Context, w http.Response
 
 	// Per S3 semantics this is largely idempotent; we simply remove the
 	// temporary upload directory if it exists.
-	uploadDir := filepath.Join(s.Config.DataDir, "uploads", uploadID)
+	uploadDir, err := s.resolveMultipartUploadDir(uploadID)
+	if err != nil {
+		writeS3Error(w, "InvalidRequest", "The uploadId query parameter is invalid.", r.URL.Path, http.StatusBadRequest)
+		return
+	}
+
 	if err := os.RemoveAll(uploadDir); err != nil && !os.IsNotExist(err) {
 		slog.Debug("Failed to remove multipart upload dir on abort", "path", uploadDir, "err", err)
 	}
